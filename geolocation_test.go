@@ -19,6 +19,8 @@ package maps
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -80,20 +82,47 @@ func TestGeolocationError(t *testing.T) {
 		}
 	}`
 
-	server := mockServer(200, response)
+	server := mockServer(400, response)
 	defer server.Close()
 	c, _ := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
 	r := &GeolocationRequest{}
 
-	_, err := c.Geolocate(context.Background(), r)
-	if err == nil {
-		t.Errorf("r.Get returned nil error")
+	result, err := c.Geolocate(context.Background(), r)
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T: %v", err, err)
 	}
+	if result != nil || httpErr.StatusCode != 400 || httpErr.Code != 400 ||
+		httpErr.Message != "Invalid value for UnsignedInteger: " {
+		t.Fatalf("lost Geolocation error metadata: result=%+v, error=%+v", result, httpErr)
+	}
+	var fieldErrors []struct {
+		Domain, Reason, Message, LocationType, Location string
+	}
+	if err := json.Unmarshal(httpErr.Errors, &fieldErrors); err != nil {
+		t.Fatal(err)
+	}
+	if len(fieldErrors) != 1 || fieldErrors[0].Domain != "global" || fieldErrors[0].Reason != "invalid" ||
+		fieldErrors[0].Message != httpErr.Message || fieldErrors[0].LocationType != "other" ||
+		fieldErrors[0].Location != "homeMobileCountryCode" {
+		t.Fatalf("lost Geolocation field error: %+v", fieldErrors)
+	}
+}
 
-	correctResponse := "Invalid value for UnsignedInteger: "
-
-	if !reflect.DeepEqual(err.Error(), correctResponse) {
-		t.Errorf("expected %+v, was %+v", correctResponse, err)
+func TestGeolocationServiceErrorWithSuccessfulHTTPStatus(t *testing.T) {
+	server := mockServer(200, `{"location":{"lat":1,"lng":2},"accuracy":3,"error":{"code":400,"message":"Invalid request"}}`)
+	defer server.Close()
+	c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.Geolocate(context.Background(), &GeolocationRequest{})
+	if result != nil || err == nil {
+		t.Fatalf("service failure returned result=%+v, error=%v", result, err)
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		t.Fatalf("HTTP 200 service failure was classified as an HTTP failure: %+v", httpErr)
 	}
 }
 

@@ -16,6 +16,10 @@ package maps
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"testing"
 )
@@ -721,5 +725,107 @@ func TestSpeedLimitsRequestURL(t *testing.T) {
 	}
 	if server.successful != 1 {
 		t.Errorf("Got URL(s) %v, want %s", server.failed, expectedQuery)
+	}
+}
+
+func TestRoadsHTTPResponses(t *testing.T) {
+	methods := []struct {
+		name string
+		call func(*Client) (int, error)
+	}{
+		{"SnapToRoad", func(c *Client) (int, error) {
+			response, err := c.SnapToRoad(context.Background(), &SnapToRoadRequest{Path: []LatLng{{1, 2}}})
+			if response == nil {
+				return -1, err
+			}
+			return len(response.SnappedPoints), err
+		}},
+		{"NearestRoads", func(c *Client) (int, error) {
+			response, err := c.NearestRoads(context.Background(), &NearestRoadsRequest{Points: []LatLng{{1, 2}}})
+			if response == nil {
+				return -1, err
+			}
+			return len(response.SnappedPoints), err
+		}},
+		{"SpeedLimits", func(c *Client) (int, error) {
+			response, err := c.SpeedLimits(context.Background(), &SpeedLimitsRequest{PlaceID: []string{"road"}})
+			if response == nil {
+				return -1, err
+			}
+			return len(response.SpeedLimits), err
+		}},
+	}
+	responses := []struct {
+		name        string
+		code        int
+		status      string
+		body        string
+		decodeError bool
+	}{
+		{name: "invalid argument", code: 400, status: "INVALID_ARGUMENT"},
+		{name: "billing denied", code: 403, status: "PERMISSION_DENIED"},
+		{name: "not found", code: 404, status: "NOT_FOUND"},
+		{name: "quota exhausted", code: 429, status: "RESOURCE_EXHAUSTED"},
+		{name: "internal error", code: 500, status: "INTERNAL"},
+		{name: "unavailable", code: 503, status: "UNAVAILABLE"},
+		{name: "non-JSON failure", code: 502, body: "<html>Bad Gateway</html>"},
+		{name: "empty failure", code: 503},
+		{name: "malformed error JSON", code: 500, body: `{"error":`},
+		{name: "non-success boundary", code: 300, body: `{}`},
+		{name: "empty success", code: 200, body: `{}`},
+		{name: "success boundary", code: 299, body: `{}`},
+		{name: "malformed success", code: 200, body: `{`, decodeError: true},
+	}
+	for _, method := range methods {
+		t.Run(method.name, func(t *testing.T) {
+			for _, response := range responses {
+				t.Run(response.name, func(t *testing.T) {
+					body := response.body
+					if response.status != "" {
+						body = fmt.Sprintf(`{"error":{"code":%d,"message":"Request rejected","status":%q,"details":[{"reason":%q}]}}`, response.code, response.status, response.status)
+					}
+					server := mockServer(response.code, body)
+					defer server.Close()
+					c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+					if err != nil {
+						t.Fatal(err)
+					}
+					count, err := method.call(c)
+					if response.code >= 200 && response.code < 300 {
+						if response.decodeError {
+							if !errors.Is(err, io.ErrUnexpectedEOF) || count != -1 {
+								t.Fatalf("malformed success returned count=%d, error=%v", count, err)
+							}
+						} else if err != nil || count != 0 {
+							t.Fatalf("empty success returned count=%d, error=%v", count, err)
+						}
+						return
+					}
+					var httpErr *HTTPError
+					if !errors.As(err, &httpErr) {
+						t.Fatalf("expected HTTPError, got %T: %v", err, err)
+					}
+					if count != -1 || httpErr.StatusCode != response.code {
+						t.Fatalf("HTTP failure returned count=%d, error=%+v", count, httpErr)
+					}
+					if response.status == "" {
+						if httpErr.Code != 0 || httpErr.Status != "" || httpErr.Message != "" {
+							t.Fatalf("unexpected service metadata: %+v", httpErr)
+						}
+						return
+					}
+					if httpErr.Code != response.code || httpErr.Status != response.status || httpErr.Message != "Request rejected" {
+						t.Fatalf("lost service error metadata: %+v", httpErr)
+					}
+					var details []struct{ Reason string }
+					if err := json.Unmarshal(httpErr.Details, &details); err != nil {
+						t.Fatal(err)
+					}
+					if len(details) != 1 || details[0].Reason != response.status {
+						t.Fatalf("lost service details: %+v", details)
+					}
+				})
+			}
+		})
 	}
 }
