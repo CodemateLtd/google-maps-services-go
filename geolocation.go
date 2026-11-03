@@ -19,7 +19,7 @@ package maps
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 )
 
 var geolocationAPI = &apiConfig{
@@ -29,18 +29,25 @@ var geolocationAPI = &apiConfig{
 	acceptsSignature: false,
 }
 
-// Geolocate makes a Geolocation API request
+// Geolocate makes a Geolocation API request. Service failures return a
+// *GeolocationError; for non-2xx responses it is wrapped by an *HTTPError.
 func (c *Client) Geolocate(ctx context.Context, r *GeolocationRequest) (*GeolocationResult, error) {
 	var response struct {
 		GeolocationResult
 		Error GeolocationError
 	}
 	if err := c.postJSON(ctx, geolocationAPI, r, &response); err != nil {
+		if httpErr, ok := err.(*HTTPError); ok && (httpErr.Code != 0 || len(httpErr.Errors) > 0) {
+			serviceErr := &GeolocationError{Code: httpErr.Code, Message: httpErr.Message}
+			if (len(httpErr.Errors) == 0 || json.Unmarshal(httpErr.Errors, &serviceErr.Errors) == nil) &&
+				(serviceErr.Code != 0 || len(serviceErr.Errors) > 0) {
+				httpErr.cause = serviceErr
+			}
+		}
 		return nil, err
 	}
-	// TODO: much more error detail available here, what do?
 	if response.Error.Code != 0 || len(response.Error.Errors) > 0 {
-		return nil, fmt.Errorf("%s", response.Error.Message)
+		return nil, &response.Error
 	}
 	return &response.GeolocationResult, nil
 }
@@ -124,7 +131,8 @@ type GeolocationResult struct {
 	Accuracy float64
 }
 
-// GeolocationError is an error object reporting a request error
+// GeolocationError reports a Geolocation service failure. Use errors.As to
+// inspect it, including when an HTTPError wraps a non-2xx response.
 type GeolocationError struct {
 	// Errors lists errors that occurred
 	Errors []struct {
@@ -134,8 +142,13 @@ type GeolocationError struct {
 		// Message is a short description of the error
 		Message string
 	}
-	// Code is the error code (same as HTTP response)
+	// Code is the error code supplied by the service, documented to match the HTTP status.
 	Code int
 	// Message is a short description of the error
 	Message string
+}
+
+// Error returns the service's top-level message.
+func (e *GeolocationError) Error() string {
+	return e.Message
 }

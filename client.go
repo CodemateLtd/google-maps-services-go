@@ -291,6 +291,7 @@ type HTTPError struct {
 	Details json.RawMessage `json:"details"`
 	// Errors preserves per-field errors, including Geolocation reason records.
 	Errors json.RawMessage `json:"errors"`
+	cause  error
 }
 
 // Error returns the HTTP status and the service message, when available.
@@ -303,6 +304,11 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("maps: HTTP %d - %s", e.StatusCode, message)
 	}
 	return fmt.Sprintf("maps: HTTP %d", e.StatusCode)
+}
+
+// Unwrap returns the endpoint-specific service error, when available.
+func (e *HTTPError) Unwrap() error {
+	return e.cause
 }
 
 func (c *Client) getJSON(ctx context.Context, config *apiConfig, apiReq apiRequest, resp interface{}) error {
