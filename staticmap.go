@@ -229,11 +229,13 @@ func (p Path) String() string {
 	return strings.Join(r, "|")
 }
 
-// StaticMapRequest is the functional options struct for staticMap.Get
+// StaticMapRequest specifies the parameters for StaticMap.
 type StaticMapRequest struct {
-	// Center focus the map at the correct location
+	// Center focuses the map at the specified location. It may be omitted when
+	// Markers or Paths are supplied.
 	Center string
-	// Zoom (required if markers not present) defines the zoom level of the map
+	// Zoom defines the zoom level of the map. It may be omitted when Markers or
+	// Paths are supplied.
 	Zoom int
 	// Size (required) defines the rectangular dimensions of the map image. This
 	// parameter takes a string of the form {horizontal_value}x{vertical_value}
@@ -259,7 +261,8 @@ type StaticMapRequest struct {
 	// locations.
 	Markers []Marker
 	// Paths (optional) defines multiple paths of two or more connected points to
-	// overlay on the image at specified locations
+	// overlay on the image at specified locations. When Center and Zoom are omitted,
+	// the service determines the viewport from the paths.
 	Paths []Path
 	// Visible specifies one or more locations that should remain visible on the map,
 	// though no markers or other indicators will be displayed.
@@ -326,9 +329,10 @@ func (r *StaticMapRequest) params() url.Values {
 }
 
 // StaticMap makes a StaticMap API request.
+// When Center and Zoom are omitted, Markers or Paths determine the viewport.
 func (c *Client) StaticMap(ctx context.Context, r *StaticMapRequest) (image.Image, error) {
-	if len(r.Markers) == 0 && r.Center == "" && r.Zoom == 0 {
-		return nil, errors.New("maps: Center & Zoom required if Markers empty")
+	if len(r.Markers) == 0 && len(r.Paths) == 0 && r.Center == "" && r.Zoom == 0 {
+		return nil, errors.New("maps: Center & Zoom required if Markers and Paths empty")
 	}
 	if r.Size == "" {
 		return nil, errors.New("maps: Size empty")

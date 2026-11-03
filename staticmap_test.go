@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -69,6 +71,112 @@ func TestStaticMode(t *testing.T) {
 
 	if resp.Bounds().Min.X != 0 || resp.Bounds().Min.Y != 0 || resp.Bounds().Max.X != 640 || resp.Bounds().Max.Y != 400 {
 		t.Errorf("Response image not of the correct dimensions")
+	}
+}
+
+func TestStaticMapPathViewport(t *testing.T) {
+	response := image.NewRGBA(image.Rect(0, 0, 2, 1))
+	response.SetRGBA(0, 0, color.RGBA{R: 255, A: 255})
+	response.SetRGBA(1, 0, color.RGBA{B: 255, A: 255})
+
+	tests := []struct {
+		name    string
+		request StaticMapRequest
+		query   string
+	}{
+		{
+			name: "path only",
+			request: StaticMapRequest{
+				Size: "2x1",
+				Paths: []Path{{
+					Color:  "red",
+					Weight: 3,
+					Location: []LatLng{
+						{Lat: 1, Lng: 2},
+						{Lat: 3, Lng: 4},
+					},
+				}},
+			},
+			query: "key=AIzaNotReallyAnAPIKey&path=color%3Ared%7Cweight%3A3%7C1%2C2%7C3%2C4&size=2x1",
+		},
+		{
+			name: "markers remain accepted",
+			request: StaticMapRequest{
+				Size:    "2x1",
+				Markers: []Marker{{LocationAddress: "Brooklyn"}},
+			},
+			query: "key=AIzaNotReallyAnAPIKey&markers=Brooklyn&size=2x1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := mockServerForQueryWithImage(tt.query, http.StatusOK, response)
+			defer server.s.Close()
+			c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.s.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := c.StaticMap(context.Background(), &tt.request)
+			if err != nil {
+				t.Fatalf("StaticMap returned an error: %v", err)
+			}
+			if got.Bounds() != response.Bounds() {
+				t.Fatalf("image bounds = %v, want %v", got.Bounds(), response.Bounds())
+			}
+			for x := 0; x < 2; x++ {
+				want := response.RGBAAt(x, 0)
+				if pixel := color.RGBAModel.Convert(got.At(x, 0)).(color.RGBA); pixel != want {
+					t.Errorf("pixel at (%d, 0) = %v, want %v", x, pixel, want)
+				}
+			}
+		})
+	}
+}
+
+func TestStaticMapPathViewportValidation(t *testing.T) {
+	var dispatched int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&dispatched, 1)
+		http.Error(w, "unexpected dispatch", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		request StaticMapRequest
+	}{
+		{
+			name:    "all positioning sources absent",
+			request: StaticMapRequest{Size: "2x1"},
+		},
+		{
+			name: "path without size",
+			request: StaticMapRequest{
+				Paths: []Path{{
+					Location: []LatLng{
+						{Lat: 1, Lng: 2},
+						{Lat: 3, Lng: 4},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := c.StaticMap(context.Background(), &tt.request); err == nil || got != nil {
+				t.Errorf("StaticMap = (%v, %v), want nil image and a validation error", got, err)
+			}
+			if got := atomic.LoadInt32(&dispatched); got != 0 {
+				t.Errorf("validation dispatched %d HTTP requests, want 0", got)
+			}
+		})
 	}
 }
 
