@@ -72,6 +72,21 @@ Additional documentation about the APIs is available at:
 - [Roads API]
 - [Maps Static API]
 
+### API status errors
+
+Methods such as Geocoding and Directions can report a service failure even when the HTTP response is successful. Methods using the response's top-level `status` and `error_message` return a `*maps.APIError`, exposing those values as `Status` and `Message` instead of requiring error-string parsing. The existing human-readable error text is unchanged.
+
+After an API call, inspect the error with `errors.As` (import `"errors"`):
+
+```go
+var apiErr *maps.APIError
+if errors.As(err, &apiErr) {
+	log.Printf("Maps API status %s: %s", apiErr.Status, apiErr.Message)
+}
+```
+
+`OK` and `ZERO_RESULTS` remain non-errors. Unknown service status values and absent messages are preserved. HTTP/transport failures and Geolocation's error envelope are separate from this service-status contract; this change adds no automatic retries.
+
 ## Usage
 
 Sample usage of the Directions API with an API key:
