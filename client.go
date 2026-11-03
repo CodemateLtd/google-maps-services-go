@@ -368,6 +368,20 @@ func (c *Client) generateAuthQuery(path string, q url.Values, acceptClientID boo
 	return "", errors.New("maps: API Key missing")
 }
 
+// APIError reports a failure indicated by an API response's top-level status.
+// The service status is distinct from the HTTP response status code.
+type APIError struct {
+	// Status is the service status, including unknown future status values.
+	Status string
+	// Message is the optional error_message supplied by the service.
+	Message string
+}
+
+// Error returns the service status and message in the existing error format.
+func (e *APIError) Error() string {
+	return fmt.Sprintf("maps: %s - %s", e.Status, e.Message)
+}
+
 // commonResponse contains the common response fields to most API calls inside
 // the Google Maps APIs. This is used internally.
 type commonResponse struct {
@@ -383,7 +397,7 @@ type commonResponse struct {
 // from OK or ZERO_RESULTS.
 func (c *commonResponse) StatusError() error {
 	if c.Status != "OK" && c.Status != "ZERO_RESULTS" {
-		return fmt.Errorf("maps: %s - %s", c.Status, c.ErrorMessage)
+		return &APIError{Status: c.Status, Message: c.ErrorMessage}
 	}
 	return nil
 }
