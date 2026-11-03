@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,13 @@ func TestGeolocationError(t *testing.T) {
 		fieldErrors[0].Location != "homeMobileCountryCode" {
 		t.Fatalf("lost Geolocation field error: %+v", fieldErrors)
 	}
+	var geoErr *GeolocationError
+	if !errors.As(err, &geoErr) || geoErr.Code != httpErr.Code ||
+		len(geoErr.Errors) != 1 || geoErr.Errors[0].Reason != fieldErrors[0].Reason ||
+		geoErr.Errors[0].Domain != fieldErrors[0].Domain ||
+		geoErr.Errors[0].Message != fieldErrors[0].Message {
+		t.Fatalf("lost typed Geolocation metadata: %+v", geoErr)
+	}
 }
 
 func TestGeolocationServiceErrorWithSuccessfulHTTPStatus(t *testing.T) {
@@ -123,6 +131,124 @@ func TestGeolocationServiceErrorWithSuccessfulHTTPStatus(t *testing.T) {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		t.Fatalf("HTTP 200 service failure was classified as an HTTP failure: %+v", httpErr)
+	}
+	var geoErr *GeolocationError
+	if !errors.As(err, &geoErr) || err != geoErr || geoErr.Code != 400 ||
+		geoErr.Message != "Invalid request" || err.Error() != geoErr.Message {
+		t.Fatalf("expected direct Geolocation service error, got %T: %v", err, err)
+	}
+}
+
+func TestGeolocationStructuredFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		code   int
+		reason string
+	}{
+		{"invalid key", 400, 400, "keyInvalid"},
+		{"parse error", 400, 400, "parseError"},
+		{"daily limit", 403, 403, "dailyLimitExceeded"},
+		{"user rate limit", 403, 403, "userRateLimitExceeded"},
+		{"not found", 404, 404, "notFound"},
+		{"independent service code", 403, 429, "userRateLimitExceeded"},
+		{"legacy envelope", 200, 400, "parseError"},
+		{"reason without service code", 400, 0, "parseError"},
+		{"legacy reason without service code", 200, 0, "parseError"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"error":{"code":%d,"message":"Request could not be completed","errors":[{"domain":"geolocation","reason":%q,"message":"Primary failure","locationType":"parameter","location":"key"},{"domain":"usageLimits","reason":"quotaExceeded","message":"Secondary failure"}],"details":[{"extra":"preserved"}]}}`, tt.code, tt.reason)
+			server := mockServer(tt.status, body)
+			defer server.Close()
+			c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Geolocate(context.Background(), &GeolocationRequest{})
+			var geoErr *GeolocationError
+			if result != nil || !errors.As(err, &geoErr) {
+				t.Fatalf("expected Geolocation failure, got result=%+v, error=%v", result, err)
+			}
+			if geoErr.Code != tt.code || geoErr.Message != "Request could not be completed" ||
+				geoErr.Error() != geoErr.Message || len(geoErr.Errors) != 2 {
+				t.Fatalf("lost service metadata: %+v", geoErr)
+			}
+			if geoErr.Errors[0].Domain != "geolocation" || geoErr.Errors[0].Reason != tt.reason ||
+				geoErr.Errors[0].Message != "Primary failure" || geoErr.Errors[1].Domain != "usageLimits" ||
+				geoErr.Errors[1].Reason != "quotaExceeded" || geoErr.Errors[1].Message != "Secondary failure" {
+				t.Fatalf("lost reason entries: %+v", geoErr.Errors)
+			}
+			var httpErr *HTTPError
+			if tt.status == 200 {
+				if errors.As(err, &httpErr) || err != geoErr {
+					t.Fatalf("expected direct service error, got %T: %v", err, err)
+				}
+			} else {
+				if !errors.As(err, &httpErr) || err != httpErr || httpErr.StatusCode != tt.status ||
+					httpErr.Code != tt.code || errors.Unwrap(httpErr) != geoErr {
+					t.Fatalf("lost HTTP/service distinction: %T: %v", err, err)
+				}
+				var raw struct {
+					Location string
+				}
+				var entries []json.RawMessage
+				if json.Unmarshal(httpErr.Errors, &entries) != nil || len(entries) != 2 ||
+					json.Unmarshal(entries[0], &raw) != nil || raw.Location != "key" ||
+					string(httpErr.Details) != `[{"extra":"preserved"}]` {
+					t.Fatalf("lost extra wire metadata: %+v", httpErr)
+				}
+			}
+		})
+	}
+}
+
+func TestGeolocationUnstructuredFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"HTML", 403, "<html>Access denied</html>"},
+		{"empty", 404, ""},
+		{"malformed error", 400, `{"error":{"code":400,`},
+		{"invalid reason list", 400, `{"error":{"code":400,"errors":"invalid"}}`},
+		{"legacy generic error", 403, `{"status":"REQUEST_DENIED","error_message":"Denied"}`},
+		{"malformed success", 200, `{"location":`},
+		{"invalid success shape", 200, `{"accuracy":"not a number"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := mockServer(tt.status, tt.body)
+			defer server.Close()
+			c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Geolocate(context.Background(), &GeolocationRequest{})
+			var geoErr *GeolocationError
+			if result != nil || err == nil || errors.As(err, &geoErr) {
+				t.Fatalf("fabricated service failure: result=%+v, error=%T: %v", result, err, err)
+			}
+			var httpErr *HTTPError
+			if tt.status != 200 {
+				if !errors.As(err, &httpErr) || httpErr.StatusCode != tt.status || errors.Unwrap(httpErr) != nil {
+					t.Fatalf("expected generic HTTP error: %T: %v", err, err)
+				}
+			} else {
+				if errors.As(err, &httpErr) {
+					t.Fatalf("JSON failure became HTTP failure: %+v", httpErr)
+				}
+				if tt.name == "invalid success shape" {
+					var typeErr *json.UnmarshalTypeError
+					if !errors.As(err, &typeErr) {
+						t.Fatalf("lost JSON type error: %T: %v", err, err)
+					}
+				} else if !errors.Is(err, io.ErrUnexpectedEOF) {
+					t.Fatalf("lost malformed JSON error: %T: %v", err, err)
+				}
+			}
+		})
 	}
 }
 
