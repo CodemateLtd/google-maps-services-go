@@ -49,6 +49,12 @@ As well as the following legacy APIs:
 > [!IMPORTANT]  
 > This key should be kept secret on your server.
 
+Load API keys from outside your source tree; the examples use the `GOOGLE_MAPS_API_KEY`
+environment variable, which can be injected by your deployment's secret-management
+system. Apply API restrictions for the services you use and server-side IP
+restrictions for the public egress addresses Google sees. See
+[API key security best practices](https://developers.google.com/maps/api-security-best-practices#restricting-api-keys).
+
 ## Installation
 
 To install the Go Client for Google Maps Services, please execute the following `go get` command.
@@ -82,13 +88,18 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/kr/pretty"
 	"googlemaps.github.io/maps"
 )
 
 func main() {
-	c, err := maps.NewClient(maps.WithAPIKey("Insert-API-Key-Here"))
+	apiKey, ok := os.LookupEnv("GOOGLE_MAPS_API_KEY")
+	if !ok || apiKey == "" {
+		log.Fatal("GOOGLE_MAPS_API_KEY must be set and non-empty")
+	}
+	c, err := maps.NewClient(maps.WithAPIKey(apiKey))
 	if err != nil {
 		log.Fatalf("fatal error: %s", err)
 	}
@@ -113,13 +124,18 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 
 	"github.com/kr/pretty"
 	"googlemaps.github.io/maps"
 )
 
 func main() {
-	c, err := maps.NewClient(maps.WithAPIKey("Insert-API-Key-Here"))
+	apiKey, ok := os.LookupEnv("GOOGLE_MAPS_API_KEY")
+	if !ok || apiKey == "" {
+		log.Fatal("GOOGLE_MAPS_API_KEY must be set and non-empty")
+	}
+	c, err := maps.NewClient(maps.WithAPIKey(apiKey))
 	if err != nil {
 		log.Fatalf("fatal error: %s", err)
 	}
