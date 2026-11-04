@@ -84,6 +84,7 @@ func main() {
 
 	parseLocation(*location, r)
 	parsePlaceType(*placeType, r)
+	check(parseComponents(*components, r))
 
 	resp, err := client.PlaceAutocomplete(context.Background(), r)
 	check(err)
