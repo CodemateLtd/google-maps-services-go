@@ -124,10 +124,10 @@ func main() {
 		log.Fatalf("fatal error: %s", err)
 	}
 	r := &maps.GeocodingRequest{
-		LatLng: &LatLng{Lat: 40.714224, Lng: -73.961452},
-		EnableAddressDescriptor: True
+		LatLng:                  &maps.LatLng{Lat: 40.714224, Lng: -73.961452},
+		EnableAddressDescriptor: true,
 	}
-	reverseGeocodingResponse, _, err := c.ReverseGeocode(context.Background(), r)
+	reverseGeocodingResponse, err := c.ReverseGeocode(context.Background(), r)
 	if err != nil {
 		log.Fatalf("fatal error: %s", err)
 	}
