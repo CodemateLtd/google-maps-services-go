@@ -38,7 +38,7 @@ var (
 	bounds       = flag.String("bounds", "", "The bounding box of the viewport within which to bias geocode results more prominently.")
 	language     = flag.String("language", "", "The language in which to return results.")
 	region       = flag.String("region", "", "The region code, specified as a ccTLD two-character value.")
-	latlng       = flag.String("latlng", "", "The textual latitude/longitude value for which you wish to obtain the closest, human-readable address.")
+	latlng       = flag.String("latlng", "", "The textual latitude/longitude value for which you wish to obtain the closest, human-readable address. Uses ReverseGeocode only when neither address nor components is set; mixed inputs retain Geocode.")
 	resultType   = flag.String("result_type", "", "One or more address types, separated by a pipe (|).")
 	locationType = flag.String("location_type", "", "One or more location types, separated by a pipe (|).")
 	enableAddressDescriptor = flag.String("enable_address_descriptor", "", "True or False.  Whether to return the Address Descriptors in the response.")
@@ -84,7 +84,12 @@ func main() {
 	parseLocationType(*locationType, r)
 	parseEnableAddressDescriptor(*enableAddressDescriptor, r)
 
-	resp, err := client.Geocode(context.Background(), r)
+	var resp maps.GeocodingResponse
+	if r.LatLng != nil && r.Address == "" && len(r.Components) == 0 {
+		resp, err = client.ReverseGeocode(context.Background(), r)
+	} else {
+		resp, err = client.Geocode(context.Background(), r)
+	}
 	check(err)
 
 	pretty.Println(resp)
