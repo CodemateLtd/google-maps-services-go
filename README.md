@@ -150,11 +150,16 @@ Native objects for each of the API responses.
 
 ### Monitoring
 
+OpenCensus is archived and no longer maintained. See the official
+[sunset notice and OpenTelemetry migration guidance](https://opentelemetry.io/blog/2023/sunsetting-opencensus/#how-to-migrate-to-opentelemetry).
+
 It's possible to get metrics for status counts and latency histograms for monitoring.
 Use `maps.WithMetricReporter(metrics.OpenCensusReporter{})` to log metrics to OpenCensus,
 and `metrics.RegisterViews()` to make the metrics available to be exported.
 OpenCensus can export these metrics to a [variety of monitoring services](https://opencensus.io/exporters/).
-You can also implement your own metric reporter instead of using the provided one.
+To use OpenTelemetry or another telemetry system, implement `metrics.Reporter`
+and `metrics.Request` and pass your reporter to `maps.WithMetricReporter`.
+This library does not include a built-in OpenTelemetry reporter.
 
 ## Terms of Service
 
