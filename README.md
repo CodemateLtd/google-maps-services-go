@@ -61,6 +61,8 @@ go get googlemaps.github.io/maps
 
 View the [reference documentation](https://godoc.org/googlemaps.github.io/maps).
 
+See the [release history](https://github.com/googlemaps/google-maps-services-go/releases) for release notes.
+
 Additional documentation about the APIs is available at:
 
 - [Directions API]
