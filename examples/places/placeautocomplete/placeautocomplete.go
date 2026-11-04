@@ -38,7 +38,7 @@ var (
 	location     = flag.String("location", "", "The latitude/longitude around which to retrieve place information. This must be specified as latitude,longitude.")
 	radius       = flag.Uint("radius", 0, "Defines the distance (in meters) within which to bias place results. The maximum allowed radius is 50,000 meters.")
 	placeType    = flag.String("types", "", "Restricts the results to places matching the specified type.")
-	components   = flag.String("components", "", "A component filter for specifying which country to perform autocomplete inside of")
+	components   = flag.String("components", "", "Country filters separated by |, for example 'country:us|country:ca'.")
 	strictbounds = flag.Bool("strictbounds", false, "Whether to strictly enforce bounds.")
 )
 
@@ -107,17 +107,24 @@ func parsePlaceType(placeType string, r *maps.PlaceAutocompleteRequest) {
 	}
 }
 
-func parseComponents(components string, r *maps.PlaceAutocompleteRequest) {
-	if components != "" {
-		c := strings.Split(components, "|")
-		for _, cf := range c {
-			i := strings.Split(cf, ":")
-			switch i[0] {
-			case "country":
-				r.Components[maps.ComponentCountry] = append(r.Components[maps.ComponentCountry], i[1])
-			default:
-				log.Fatalf("Unsupported component \"%v\"", i[0])
+func parseComponents(components string, r *maps.PlaceAutocompleteRequest) error {
+	if components == "" {
+		return nil
+	}
+	for _, component := range strings.Split(components, "|") {
+		parts := strings.SplitN(component, ":", 3)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid component %q: expected name:value", component)
+		}
+		switch parts[0] {
+		case "country":
+			if r.Components == nil {
+				r.Components = make(map[maps.Component][]string)
 			}
+			r.Components[maps.ComponentCountry] = append(r.Components[maps.ComponentCountry], parts[1])
+		default:
+			return fmt.Errorf("unsupported component %q", parts[0])
 		}
 	}
+	return nil
 }
