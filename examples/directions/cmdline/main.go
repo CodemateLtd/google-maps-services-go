@@ -46,7 +46,7 @@ var (
 	region                   = flag.String("region", "", "Specifies the region code, specified as a ccTLD (\"top-level domain\") two-character value.")
 	transitMode              = flag.String("transit_mode", "", "Specifies one or more preferred modes of transit, | separated. This parameter may only be specified for transit directions.")
 	transitRoutingPreference = flag.String("transit_routing_preference", "", "Specifies preferences for transit routes.")
-	iterations               = flag.Int("iterations", 1, "Number of times to make API request.")
+	iterations               = flag.Int("iterations", 1, "Number of API requests. Values above 1 run concurrently and report each failure.")
 	trafficModel             = flag.String("traffic_model", "", "Specifies traffic prediction model when request future directions. Valid values are optimistic, best_guess, and pessimistic. Optional.")
 )
 
@@ -148,7 +148,7 @@ func main() {
 
 		for i := 0; i < *iterations; i++ {
 			result := <-done
-			if err != nil {
+			if result.err != nil {
 				fmt.Printf("error: %+v\n", result.err)
 			} else {
 				fmt.Println(result.result)
