@@ -20,7 +20,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
 	"image/jpeg"
+	"io"
 	"log"
 	"os"
 
@@ -34,7 +36,7 @@ var (
 	photoreference = flag.String("photoreference", "", "Textual identifier that uniquely identifies a place photo.")
 	maxheight      = flag.Int("maxheight", 0, "Specifies the maximum desired height, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
 	maxwidth       = flag.Int("maxwidth", 0, "Specifies the maximum desired width, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
-	basename       = flag.String("basename", "", "Base name of file to write image to. If not specified, no file will be written.")
+	basename       = flag.String("basename", "", "Base name of JPEG output file; success is reported after the file is closed. If omitted, no file is written.")
 )
 
 func usageAndExit(msg string) {
@@ -82,9 +84,19 @@ func main() {
 		filename := fmt.Sprintf("%s.%s", *basename, "jpg")
 		f, err := os.Create(filename)
 		check(err)
-		err = jpeg.Encode(f, img, &jpeg.Options{Quality: 85})
-		check(err)
+		check(writeJPEG(f, img))
 
 		log.Printf("Wrote image to %s\n", filename)
 	}
+}
+
+// writeJPEG owns out and closes it before returning, preserving an encode error
+// if closing also fails.
+func writeJPEG(out io.WriteCloser, img image.Image) error {
+	encodeErr := jpeg.Encode(out, img, &jpeg.Options{Quality: 85})
+	closeErr := out.Close()
+	if encodeErr != nil {
+		return encodeErr
+	}
+	return closeErr
 }
