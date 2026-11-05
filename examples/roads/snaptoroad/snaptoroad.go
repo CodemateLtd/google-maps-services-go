@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Timezone API
-// Directions docs: https://developers.google.com/maps/documentation/timezone/
+// Package main contains a simple command line tool for Roads API Snap to Roads
+// Snap to Roads docs: https://developers.google.com/maps/documentation/roads/snap
 package main
 
 import (
