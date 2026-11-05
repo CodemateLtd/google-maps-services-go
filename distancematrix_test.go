@@ -403,3 +403,76 @@ func TestDistanceMatrixTrafficRequestURL(t *testing.T) {
 		t.Errorf("Got URL(s) %v, want %s", server.failed, expectedQuery)
 	}
 }
+
+func TestDistanceMatrixTransitFares(t *testing.T) {
+	response := `{
+  "status": "OK",
+  "origin_addresses": ["London"],
+  "destination_addresses": ["Westminster", "Waterloo", "Victoria", "Nowhere"],
+  "rows": [{
+    "elements": [
+      {
+        "status": "OK",
+        "distance": {"text": "1.5 km", "value": 1500},
+        "duration": {"text": "5 mins", "value": 300},
+        "fare": {"currency": "GBP", "value": 2.75, "text": "£2.75"}
+      },
+      {
+        "status": "OK",
+        "distance": {"text": "900 m", "value": 900},
+        "duration": {"text": "3 mins", "value": 180},
+        "fare": {"currency": "USD", "value": 0, "text": "$0.00"}
+      },
+      {
+        "status": "OK",
+        "distance": {"text": "1.2 km", "value": 1200},
+        "duration": {"text": "4 mins", "value": 240}
+      },
+      {"status": "ZERO_RESULTS"}
+    ]
+  }]
+}`
+	server := mockServer(200, response)
+	defer server.Close()
+	c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.DistanceMatrix(context.Background(), &DistanceMatrixRequest{
+		Origins:      []string{"London"},
+		Destinations: []string{"Westminster", "Waterloo", "Victoria", "Nowhere"},
+		Mode:         TravelModeTransit,
+	})
+	if err != nil {
+		t.Fatalf("DistanceMatrix returned an error: %v", err)
+	}
+	want := &DistanceMatrixResponse{
+		OriginAddresses:      []string{"London"},
+		DestinationAddresses: []string{"Westminster", "Waterloo", "Victoria", "Nowhere"},
+		Rows: []DistanceMatrixElementsRow{{
+			Elements: []*DistanceMatrixElement{
+				{
+					Status:   "OK",
+					Duration: 300 * time.Second,
+					Distance: Distance{HumanReadable: "1.5 km", Meters: 1500},
+					Fare:     &Fare{Currency: "GBP", Value: 2.75, Text: "£2.75"},
+				},
+				{
+					Status:   "OK",
+					Duration: 180 * time.Second,
+					Distance: Distance{HumanReadable: "900 m", Meters: 900},
+					Fare:     &Fare{Currency: "USD", Value: 0, Text: "$0.00"},
+				},
+				{
+					Status:   "OK",
+					Duration: 240 * time.Second,
+					Distance: Distance{HumanReadable: "1.2 km", Meters: 1200},
+				},
+				{Status: "ZERO_RESULTS"},
+			},
+		}},
+	}
+	if !reflect.DeepEqual(resp, want) {
+		t.Errorf("DistanceMatrix response = %+v, want %+v", resp, want)
+	}
+}
