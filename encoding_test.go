@@ -54,8 +54,9 @@ func TestSnappedPoint(t *testing.T) {
 
 func TestDistanceMatrixElement_MarshalJSON(t *testing.T) {
 	dme := &DistanceMatrixElement{
-		Duration:          1*time.Second,
-		DurationInTraffic: 2*time.Second,
+		Duration:          1 * time.Second,
+		DurationInTraffic: 2 * time.Second,
+		Fare:              &Fare{Currency: "GBP", Value: 2.75, Text: "£2.75"},
 	}
 	b, err := dme.MarshalJSON()
 	if err != nil {

@@ -181,4 +181,7 @@ type DistanceMatrixElement struct {
 	DurationInTraffic time.Duration `json:"duration_in_traffic"`
 	// Distance is the total distance of this route.
 	Distance Distance `json:"distance"`
+	// Fare is the total transit fare, when available. A nil value means
+	// fare information was not returned.
+	Fare *Fare `json:"fare"`
 }
