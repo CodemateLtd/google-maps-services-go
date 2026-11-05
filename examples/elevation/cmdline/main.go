@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package main contains a simple command line tool for Elevation API
-// Directions docs: https://developers.google.com/maps/documentation/distancematrix/
+// Elevation docs: https://developers.google.com/maps/documentation/elevation/
 package main
 
 import (

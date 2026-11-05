@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for DistanceMatrix
-// Directions docs: https://developers.google.com/maps/documentation/distancematrix/
+// Package main contains a simple command line tool for Distance Matrix API
+// Distance Matrix docs: https://developers.google.com/maps/documentation/distancematrix/
 package main
 
 import (
