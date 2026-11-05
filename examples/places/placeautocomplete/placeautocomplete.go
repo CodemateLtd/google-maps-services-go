@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Places API Place Autocomplete
+// Package main contains a simple command line tool for Places API Place Autocomplete (Legacy).
 // Documentation: https://developers.google.com/maps/documentation/places/web-service/legacy/autocomplete
+//
+// Existing Legacy callers remain supported. For Autocomplete (New) place predictions, see
+// https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-autocomplete.
+// Newer APIs are not added to this SDK; use the external Go Places client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/places.
 package main
 
 import (

@@ -12,8 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Places API Nearby Search
+// Package main contains a simple command line tool for Places API Nearby Search (Legacy).
 // Documentation: https://developers.google.com/maps/documentation/places/web-service/legacy/search-nearby
+//
+// Existing Legacy callers remain supported. For Nearby Search (New), see
+// https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-nearby.
+// Text queries instead use Text Search (New).
+// Newer APIs are not added to this SDK; use the external Go Places client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/places.
 package main
 
 import (

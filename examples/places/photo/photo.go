@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Places Photos API
+// Package main contains a simple command line tool for Places Photos API (Legacy).
 // Documentation: https://developers.google.com/places/web-service/photos
+//
+// Existing Legacy callers remain supported. For Place Photos (New), see
+// https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-photo.
+// Newer APIs are not added to this SDK; use the external Go Places client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/places.
 package main
 
 import (

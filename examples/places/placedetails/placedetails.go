@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Places API Place Details
+// Package main contains a simple command line tool for Places API Place Details (Legacy).
 // Documentation: https://developers.google.com/maps/documentation/places/web-service/legacy/details
+//
+// Existing Legacy callers remain supported. For Place Details (New), see
+// https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-details.
+// Newer APIs are not added to this SDK; use the external Go Places client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/places.
 package main
 
 import (
