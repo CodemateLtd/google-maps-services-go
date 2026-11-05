@@ -80,6 +80,9 @@ func (r *DistanceMatrixRequest) params() url.Values {
 	if r.Language != "" {
 		q.Set("language", r.Language)
 	}
+	if r.Region != "" {
+		q.Set("region", r.Region)
+	}
 	if r.Avoid != "" {
 		q.Set("avoid", string(r.Avoid))
 	}
@@ -122,6 +125,9 @@ type DistanceMatrixRequest struct {
 	Mode Mode
 	// Language in which to return results. Optional.
 	Language string
+	// Region specifies the region code as a ccTLD two-character value.
+	// For example, use "uk" for the United Kingdom, not "gb". Optional.
+	Region string
 	// Avoid introduces restrictions to the route. Valid values are `AvoidTolls`,
 	// `AvoidHighways` and `AvoidFerries`. Optional.
 	Avoid Avoid
