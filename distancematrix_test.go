@@ -403,3 +403,48 @@ func TestDistanceMatrixTrafficRequestURL(t *testing.T) {
 		t.Errorf("Got URL(s) %v, want %s", server.failed, expectedQuery)
 	}
 }
+
+func TestDistanceMatrixRegionRequestURL(t *testing.T) {
+	tests := []struct {
+		name          string
+		region        string
+		expectedQuery string
+	}{
+		{
+			name:          "ccTLD",
+			region:        "uk",
+			expectedQuery: "destinations=Cambridge%7COxford&key=AIzaNotReallyAnAPIKey&language=en&origins=London%7CManchester&region=uk",
+		},
+		{
+			name:          "omitted",
+			expectedQuery: "destinations=Cambridge%7COxford&key=AIzaNotReallyAnAPIKey&language=en&origins=London%7CManchester",
+		},
+		{
+			name:          "unchanged",
+			region:        "UK",
+			expectedQuery: "destinations=Cambridge%7COxford&key=AIzaNotReallyAnAPIKey&language=en&origins=London%7CManchester&region=UK",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := mockServerForQuery(test.expectedQuery, 200, `{"status":"OK"}`)
+			defer server.s.Close()
+			c, err := NewClient(WithAPIKey(apiKey), WithBaseURL(server.s.URL))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.DistanceMatrix(context.Background(), &DistanceMatrixRequest{
+				Origins:      []string{"London", "Manchester"},
+				Destinations: []string{"Cambridge", "Oxford"},
+				Language:     "en",
+				Region:       test.region,
+			})
+			if err != nil {
+				t.Fatalf("DistanceMatrix returned an error: %v", err)
+			}
+			if server.successful != 1 {
+				t.Errorf("Got URL(s) %v, want %s", server.failed, test.expectedQuery)
+			}
+		})
+	}
+}
