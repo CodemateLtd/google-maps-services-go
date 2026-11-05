@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Directions API
+// Package main contains a simple command line tool for Directions API (Legacy).
 // Directions docs: https://developers.google.com/maps/documentation/directions/
+//
+// Existing Legacy callers remain supported. For Routes API Compute Routes, see
+// https://developers.google.com/maps/documentation/routes/migrate-routes.
+// Newer APIs are not added to this SDK; use the external Go Routes client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/routing.
 package main
 
 import (

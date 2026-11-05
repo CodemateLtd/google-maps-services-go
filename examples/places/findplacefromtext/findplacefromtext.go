@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Find Place From Text API
+// Package main contains a simple command line tool for Find Place From Text API (Legacy).
+//
+// Existing Legacy callers remain supported. For Text Search (New), see
+// https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-text.
+// Newer APIs are not added to this SDK; use the external Go Places client:
+// https://github.com/googleapis/google-cloud-go/tree/main/maps/places.
 package main
 
 import (
