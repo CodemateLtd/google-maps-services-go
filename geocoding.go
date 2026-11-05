@@ -179,7 +179,10 @@ type GeocodingRequest struct {
 	// Language is the language in which to return results. Optional.
 	Language string
 
-	// Language is the language in which to return results. Optional.
+	// EnableAddressDescriptor requests optional address descriptors, which describe
+	// a location using landmarks and areas. Reverse geocoding returns the descriptor
+	// in GeocodingResponse.AddressDescriptor.
+	// See https://developers.google.com/maps/documentation/geocoding/guides-v3/address-descriptors/requests-address-descriptors
 	EnableAddressDescriptor bool
 
 	// Custom allows passing through custom parameters to the Geocoding back end.
