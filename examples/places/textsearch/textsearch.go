@@ -14,6 +14,9 @@
 
 // Package main contains a simple command line tool for Places API Text Search
 // Documentation: https://developers.google.com/places/web-service/search#TextSearchRequests
+//
+// Authentication requires -key. The former -client_id and -signature flags
+// were removed because Places does not support Premium Plan client IDs.
 package main
 
 import (
@@ -29,8 +32,6 @@ import (
 
 var (
 	apiKey    = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID  = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature = flag.String("signature", "", "Signature for Maps for Work API access.")
 	query     = flag.String("query", "", "Text Search query to execute.")
 	language  = flag.String("language", "", "The language in which to return results.")
 	location  = flag.String("location", "", "The latitude/longitude around which to retrieve place information. This must be specified as latitude,longitude.")
@@ -59,13 +60,10 @@ func main() {
 
 	var client *maps.Client
 	var err error
-	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
-	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+	if *apiKey == "" {
+		usageAndExit("Please specify an API Key.")
 	}
+	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
 	check(err)
 
 	r := &maps.TextSearchRequest{

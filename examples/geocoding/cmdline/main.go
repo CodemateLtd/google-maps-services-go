@@ -30,9 +30,9 @@ import (
 )
 
 var (
-	apiKey       = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID     = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature    = flag.String("signature", "", "Signature for Maps for Work API access.")
+	apiKey       = flag.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID     = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature    = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
 	address      = flag.String("address", "", "The street address that you want to geocode, in the format used by the national postal service of the country concerned.")
 	components   = flag.String("components", "", "A component filter for which you wish to obtain a geocode.")
 	bounds       = flag.String("bounds", "", "The bounding box of the viewport within which to bias geocode results more prominently.")
@@ -67,7 +67,7 @@ func main() {
 	} else if *clientID != "" || *signature != "" {
 		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
 	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+		usageAndExit("Please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret.")
 	}
 	check(err)
 

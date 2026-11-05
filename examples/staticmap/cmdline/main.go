@@ -28,9 +28,9 @@ import (
 )
 
 var (
-	apiKey    = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID  = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature = flag.String("signature", "", "Signature for Maps for Work API access or optional APIs.")
+	apiKey    = flag.String("key", "", "API key for Google Maps API access (recommended); may be combined with -signature for URL signing.")
+	clientID  = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature = flag.String("signature", "", "URL signing secret, not a precomputed signature; signs an API key or an eligible existing customer's legacy client ID.")
 	center    = flag.String("center", "", "Center the center of the map, equidistant from all edges of the map.")
 	zoom      = flag.Int("zoom", -1, "Zoom the zoom level of the map, which determines the magnification level of the map.")
 	size      = flag.String("size", "", "Size defines the rectangular dimensions of the map image.")
@@ -69,7 +69,7 @@ func main() {
 	} else if *clientID != "" || *signature != "" {
 		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
 	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+		usageAndExit("Please specify an API key (recommended; optionally with a URL signing secret), or an eligible existing customer's legacy client ID and URL signing secret.")
 	}
 	check(err)
 
