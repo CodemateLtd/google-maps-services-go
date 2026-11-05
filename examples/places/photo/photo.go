@@ -14,6 +14,9 @@
 
 // Package main contains a simple command line tool for Places Photos API
 // Documentation: https://developers.google.com/places/web-service/photos
+//
+// Authentication requires -key. The former -client_id and -signature flags
+// were removed because Places does not support Premium Plan client IDs.
 package main
 
 import (
@@ -29,8 +32,6 @@ import (
 
 var (
 	apiKey         = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID       = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature      = flag.String("signature", "", "Signature for Maps for Work API access.")
 	photoreference = flag.String("photoreference", "", "Textual identifier that uniquely identifies a place photo.")
 	maxheight      = flag.Int("maxheight", 0, "Specifies the maximum desired height, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
 	maxwidth       = flag.Int("maxwidth", 0, "Specifies the maximum desired width, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
@@ -55,13 +56,10 @@ func main() {
 
 	var client *maps.Client
 	var err error
-	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
-	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+	if *apiKey == "" {
+		usageAndExit("Please specify an API Key.")
 	}
+	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
 	check(err)
 
 	r := &maps.PlacePhotoRequest{

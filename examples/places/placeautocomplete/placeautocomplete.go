@@ -14,6 +14,9 @@
 
 // Package main contains a simple command line tool for Places API Query Autocomplete
 // Documentation: https://developers.google.com/places/web-service/query
+//
+// Authentication requires -key. The former -client_id and -signature flags
+// were removed because Places does not support Premium Plan client IDs.
 package main
 
 import (
@@ -30,8 +33,6 @@ import (
 
 var (
 	apiKey       = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID     = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature    = flag.String("signature", "", "Signature for Maps for Work API access.")
 	input        = flag.String("input", "", "Text string on which to search.")
 	language     = flag.String("language", "", "The language in which to return results.")
 	offset       = flag.Uint("offset", 0, "The character position in the input term at which the service uses text for predictions.")
@@ -60,13 +61,10 @@ func main() {
 
 	var client *maps.Client
 	var err error
-	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
-	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+	if *apiKey == "" {
+		usageAndExit("Please specify an API Key.")
 	}
+	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
 	check(err)
 
 	// s is a session token. Thread this through a series of requests that comprise

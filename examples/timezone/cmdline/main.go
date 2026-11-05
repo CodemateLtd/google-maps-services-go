@@ -30,9 +30,9 @@ import (
 )
 
 var (
-	apiKey    = flag.String("key", "", "API Key for using Google Maps API.")
-	clientID  = flag.String("client_id", "", "ClientID for Maps for Work API access.")
-	signature = flag.String("signature", "", "Signature for Maps for Work API access.")
+	apiKey    = flag.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID  = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
 	location  = flag.String("location", "", "a comma-separated lat,lng tuple (eg. location=-33.86,151.20), representing the location to look up.")
 	timestamp = flag.String("timestamp", "", "specifies the desired time as seconds since midnight, January 1, 1970 UTC.")
 	language  = flag.String("language", "", "The language in which to return results.")
@@ -61,7 +61,7 @@ func main() {
 	} else if *clientID != "" || *signature != "" {
 		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
 	} else {
-		usageAndExit("Please specify an API Key, or Client ID and Signature.")
+		usageAndExit("Please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret.")
 	}
 	check(err)
 
