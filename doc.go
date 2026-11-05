@@ -16,5 +16,22 @@
 Package maps provides a client library for the Google Maps Web Service APIs.
 Please see https://developers.google.com/maps/documentation/webservices/ for
 an overview of the Maps Web Service API suite.
+
+This library supports Elevation, Geocoding, Roads, Time Zone and Static Maps,
+as well as Directions API (Legacy), Distance Matrix API (Legacy) and Places
+API (Legacy). Existing Legacy callers remain supported; Legacy status does
+not mean deprecated. See https://developers.google.com/maps/legacy.
+
+For new integrations, newer APIs are available through the external
+google-cloud-go/maps client families:
+
+  - Places API (New): https://github.com/googleapis/google-cloud-go/tree/main/maps/places
+  - Routes API: https://github.com/googleapis/google-cloud-go/tree/main/maps/routing
+
+Newer APIs will not be added to this SDK. For migration guidance from
+Directions and Distance Matrix to Routes API, see
+https://developers.google.com/maps/documentation/routes/migrate-routes.
+For Places API (New), see
+https://developers.google.com/maps/documentation/places/web-service/legacy/migrate-overview.
 */
 package maps // import "googlemaps.github.io/maps"
