@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// More information about Google Distance Matrix API is available on
-// https://developers.google.com/maps/documentation/distancematrix/
+// Shared types used by Google Maps APIs.
 
 package maps
 

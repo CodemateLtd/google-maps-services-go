@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// More information about Google Distance Matrix API is available on
-// https://developers.google.com/maps/documentation/distancematrix/
+// More information about Google Time Zone API is available on
+// https://developers.google.com/maps/documentation/timezone/
 
 package maps
 
