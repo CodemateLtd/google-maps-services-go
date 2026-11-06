@@ -21,6 +21,8 @@ go mod download
   themselves. Flags can be visible in process listings, so use a trusted machine.
 - Running an example can incur service charges. Run only the example you need,
   not this entire list. The Place Photo example can also create a local file.
+- The client-configuration example's explicit `-local` mode is an exception:
+  it uses only a loopback fixture and fictional credentials, without API setup.
 
 The key is the default credential for every command. All seven Places commands
 and both Roads commands require an API key. The former `-client_id` and
@@ -60,6 +62,7 @@ migration guide. Newer APIs will not be added to this SDK.
 | Speed Limits | `./examples/roads/speedlimits` | Roads API; eligible Asset Tracking access required |
 | Static Maps | `./examples/staticmap/cmdline` | Maps Static API |
 | Time Zone | `./examples/timezone/cmdline` | Time Zone API |
+| Client configuration | `./examples/clientconfig/cmdline` | Geocoding API for real requests; none for `-local` |
 
 [Speed Limits access](https://developers.google.com/maps/documentation/roads/speed-limits)
 is restricted; enabling Roads API alone does not grant it.
@@ -144,3 +147,33 @@ Do not combine API keys and client IDs: the examples prefer `-key`, not a merged
 credential set. Static Maps uses a supplied signing secret with that key;
 the other retained examples use it only with the legacy client ID. Without an API
 key, legacy authentication requires both a client ID and its signing secret.
+
+## Client configuration and request context
+
+Run the complete configuration example offline:
+
+```sh
+go run ./examples/clientconfig/cmdline -local -channel 123
+```
+
+The explicit local mode uses an in-process HTTP fixture, fictional credentials
+and `WithBaseURL`; it makes no Google request and accepts no arbitrary endpoint.
+For a real request, enable Geocoding API and billing and supply authorized input:
+
+```sh
+go run ./examples/clientconfig/cmdline -key "$GOOGLE_MAPS_API_KEY" -address '1600 Amphitheatre Parkway, Mountain View, CA' -channel 123
+```
+
+This example owns its HTTP client and transport, with a 5-second HTTP timeout and
+a 3-second request-context deadline by default (`-http_timeout` and
+`-request_timeout`). It defers cancellation and combines client experience IDs
+with appended request-context IDs rather than mutating shared client metadata.
+Geocoding supports numeric channels 0–999 with API keys; consult the
+[channel support list](https://developers.google.com/maps/reporting-and-monitoring/reporting#usage-tracking-per-channel)
+before applying the option to another API.
+
+Results go to stdout. The existing `metrics.Reporter` callback supplies the
+service path, HTTP status and transport/JSON error presence to a credential-safe
+stderr summary; API-status errors are checked later by the SDK and may not appear
+as callback errors. The command still fails on those errors. The reporter is for
+one sequential call; concurrent reuse needs synchronized storage or a safe sink.
