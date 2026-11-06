@@ -15,53 +15,28 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/json"
-	"image"
-	"image/color"
-	"image/png"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"os/exec"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"googlemaps.github.io/maps"
 )
 
 type staticCLITransport func(*http.Request) (*http.Response, error)
 
 func (f staticCLITransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-// Exercise main's real flag parsing and exit behavior while routing all HTTP locally.
-func TestStaticCLIProcess(t *testing.T) {
-	fixture := os.Getenv("GO_STATIC_CLI_FIXTURE")
-	if fixture == "" {
-		return
-	}
-	target, err := url.Parse(fixture)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var args []string
-	if err := json.Unmarshal([]byte(os.Getenv("GO_STATIC_CLI_ARGS")), &args); err != nil {
-		t.Fatal(err)
-	}
-	base := http.DefaultTransport
-	http.DefaultTransport = staticCLITransport(func(r *http.Request) (*http.Response, error) {
-		r.URL.Scheme, r.URL.Host = target.Scheme, target.Host
-		return base.RoundTrip(r)
-	})
-	defer func() { http.DefaultTransport = base }()
-	os.Args = append([]string{os.Args[0]}, args...)
-	main()
-}
 
 func TestStaticCLI(t *testing.T) {
 	tests := []struct {
@@ -92,7 +67,7 @@ func TestStaticCLI(t *testing.T) {
 		},
 		{
 			name: "retained API key signing",
-			args: []string{"-key=offline-key", "-signature=c2VjcmV0", "-center=Paris", "-zoom=12"},
+			args: []string{"-key=offline-key", "-client_id=ignored-legacy-client", "-signature=c2VjcmV0", "-center=Paris", "-zoom=12"},
 			want: url.Values{"key": {"offline-key"}, "center": {"Paris"}, "zoom": {"12"}}, signed: true,
 		},
 		{
@@ -103,9 +78,9 @@ func TestStaticCLI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output, err, requests := runStaticCLI(t, append([]string{"-size=2x3"}, tt.args...))
-			if err != nil {
-				t.Fatalf("CLI failed: %v; output: %s", err, output)
+			output, code, err, requests := runStaticCLI(t, append([]string{"-size=2x3"}, tt.args...))
+			if code != 0 || err != nil {
+				t.Fatalf("run = (%d, %v); output: %s", code, err, output)
 			}
 			if len(requests) != 1 {
 				t.Fatalf("requests = %d, want 1", len(requests))
@@ -120,9 +95,7 @@ func TestStaticCLI(t *testing.T) {
 			if !reflect.DeepEqual(requests[0], want) {
 				t.Errorf("encoded SDK query = %#v, want %#v", requests[0], want)
 			}
-			if !strings.Contains(output, "image.RGBA") {
-				t.Errorf("output does not contain the decoded PNG image: %s", output)
-			}
+			assertStaticImageOutput(t, output)
 			for _, credential := range []string{"offline-key", "c2VjcmV0", "gme-fixture"} {
 				if strings.Contains(output, credential) {
 					t.Errorf("output disclosed credential %q", credential)
@@ -169,9 +142,9 @@ func TestStaticCLIRejectsMalformedOverlaysBeforeHTTP(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			output, err, requests := runStaticCLI(t, []string{"-key=offline-key", "-size=2x3", "-center=0,0", "-zoom=3", tt.arg})
-			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 {
-				t.Errorf("exit = %v, want usage exit 2; output: %s", err, output)
+			output, code, err, requests := runStaticCLI(t, []string{"-key=offline-key", "-size=2x3", "-center=0,0", "-zoom=3", tt.arg})
+			if code != 2 || err != nil {
+				t.Errorf("run = (%d, %v), want (2, nil); output: %s", code, err, output)
 			}
 			if len(requests) != 0 {
 				t.Errorf("malformed input reached HTTP: %#v", requests)
@@ -184,50 +157,240 @@ func TestStaticCLIRejectsMalformedOverlaysBeforeHTTP(t *testing.T) {
 }
 
 func TestStaticCLIHelp(t *testing.T) {
-	output, err, requests := runStaticCLI(t, []string{"-h"})
-	if err != nil || len(requests) != 0 {
-		t.Fatalf("help error = %v, requests = %#v; output: %s", err, requests, output)
+	output, code, err, requests := runStaticCLI(t, []string{"-h"})
+	if code != 0 || err != nil || len(requests) != 0 {
+		t.Fatalf("help = (%d, %v), requests = %#v; output: %s", code, err, requests, output)
 	}
 }
 
-func runStaticCLI(t *testing.T, args []string) (string, error, []url.Values) {
+// A literal 2-by-3 RGB PNG whose six pixels are all (17, 34, 51).
+const staticPNG = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAEElEQVR4nGMQVDIGIgYUCgAYYwJlZzrqoAAAAABJRU5ErkJggg=="
+
+type staticFixture struct {
+	mu       sync.Mutex
+	requests []url.Values
+	options  []maps.ClientOption
+}
+
+func newStaticFixture(t *testing.T, status int, body []byte) *staticFixture {
 	t.Helper()
-	var mu sync.Mutex
-	var requests []url.Values
+	fixture := &staticFixture{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requests = append(requests, r.URL.Query())
-		mu.Unlock()
+		fixture.mu.Lock()
+		fixture.requests = append(fixture.requests, r.URL.Query())
+		fixture.mu.Unlock()
 		if r.Method != http.MethodGet || r.URL.Path != "/maps/api/staticmap" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected request", http.StatusBadRequest)
 			return
 		}
-		img := image.NewRGBA(image.Rect(0, 0, 2, 3))
-		for y := 0; y < 3; y++ {
-			for x := 0; x < 2; x++ {
-				img.SetRGBA(x, y, color.RGBA{R: 17, G: 34, B: 51, A: 255})
-			}
-		}
 		w.Header().Set("Content-Type", "image/png")
-		if err := png.Encode(w, img); err != nil {
-			t.Errorf("encoding PNG fixture: %v", err)
+		w.WriteHeader(status)
+		if _, err := w.Write(body); err != nil {
+			t.Errorf("writing fixture response: %v", err)
 		}
 	}))
-	defer server.Close()
-	encoded, err := json.Marshal(args)
+	t.Cleanup(server.Close)
+	client := server.Client()
+	base := client.Transport
+	client.Timeout = 3 * time.Second
+	client.Transport = staticCLITransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme+"://"+r.URL.Host != server.URL {
+			return nil, fmt.Errorf("unexpected nonfixture request: %s", r.URL)
+		}
+		return base.RoundTrip(r)
+	})
+	fixture.options = []maps.ClientOption{maps.WithBaseURL(server.URL), maps.WithHTTPClient(client)}
+	return fixture
+}
+
+func (f *staticFixture) recorded() []url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]url.Values(nil), f.requests...)
+}
+
+func staticImageBytes(t *testing.T) []byte {
+	t.Helper()
+	body, err := base64.StdEncoding.DecodeString(staticPNG)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	return body
+}
+
+func runStaticCLI(t *testing.T, args []string) (string, int, error, []url.Values) {
+	t.Helper()
+	fixture := newStaticFixture(t, http.StatusOK, staticImageBytes(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStaticCLIProcess$")
-	cmd.Env = append(os.Environ(), "GO_STATIC_CLI_FIXTURE="+server.URL, "GO_STATIC_CLI_ARGS="+string(encoded))
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("CLI timed out: %v; output: %s", ctx.Err(), output)
+	var stdout, stderr bytes.Buffer
+	code, err := run(ctx, args, &stdout, &stderr, fixture.options...)
+	return stdout.String() + stderr.String(), code, err, fixture.recorded()
+}
+
+func assertStaticImageOutput(t *testing.T, output string) {
+	t.Helper()
+	// Inspect decoded image data without depending on pretty's layout.
+	compact := strings.Join(strings.Fields(output), "")
+	for _, field := range []string{"image.RGBA", "Stride:8", "Max:image.Point{X:2,Y:3}"} {
+		if !strings.Contains(compact, field) {
+			t.Errorf("decoded image output lacks %q: %s", field, output)
+		}
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	return string(output), err, append([]url.Values(nil), requests...)
+	for _, component := range []string{"0x11", "0x22", "0x33", "0xff"} {
+		if count := strings.Count(output, component); count != 6 {
+			t.Errorf("decoded component %s count = %d, want 6 pixels; output: %s", component, count, output)
+		}
+	}
+}
+
+func TestStaticRunInputFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantError bool
+	}{
+		{"missing credentials", nil, true},
+		{"incomplete legacy client", []string{"-client_id=gme-fixture"}, true},
+		{"secret without identity", []string{"-signature=c2VjcmV0"}, true},
+		{"invalid key secret", []string{"-key=offline-key", "-signature=%%%"}, true},
+		{"invalid legacy secret", []string{"-client_id=gme-fixture", "-signature=%%%"}, true},
+		{"unknown flag", []string{"-key=offline-key", "-unknown=true"}, false},
+		{"nonnumeric zoom", []string{"-key=offline-key", "-zoom=near"}, false},
+		{"nonnumeric scale", []string{"-key=offline-key", "-scale=large"}, false},
+		{"unexpected positional argument", []string{"-key=offline-key", "-size=2x3", "-center=Paris", "-zoom=12", "extra"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newStaticFixture(t, http.StatusOK, staticImageBytes(t))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			code, err := run(ctx, tt.args, &stdout, &stderr, fixture.options...)
+			if code != 2 || (err != nil) != tt.wantError {
+				t.Errorf("run = (%d, %v), want usage failure (returned error: %t)", code, err, tt.wantError)
+			}
+			if requests := fixture.recorded(); len(requests) != 0 {
+				t.Errorf("invalid input dispatched HTTP: %#v", requests)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("invalid input wrote success output: %s", &stdout)
+			}
+		})
+	}
+}
+
+func TestStaticRunIsolation(t *testing.T) {
+	for _, failedFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("first_run_parse_failure_%t", failedFirst), func(t *testing.T) {
+			fixture := newStaticFixture(t, http.StatusOK, staticImageBytes(t))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			first := []string{"-key=first-key", "-center=Paris", "-zoom=12", "-size=2x3", "-format=png32", "-scale=2",
+				`-marker={"locations":[[0,0]]}`, `-path={"locations":[[0,0],[1,1]]}`,
+				"-visible=1,1", "-style=feature:road|visibility:off"}
+			wantFirstCode, wantRequests := 0, 2
+			if failedFirst {
+				first = append(first, "-visible=bad")
+				wantFirstCode, wantRequests = 2, 1
+			}
+			var stdout, stderr bytes.Buffer
+			code, err := run(ctx, first, &stdout, &stderr, fixture.options...)
+			if code != wantFirstCode || err != nil {
+				t.Fatalf("first run = (%d, %v), want (%d, nil)", code, err, wantFirstCode)
+			}
+			stdout.Reset()
+			stderr.Reset()
+			code, err = run(ctx, []string{"-key=second-key", "-center=Tokyo", "-zoom=8", "-size=2x3"}, &stdout, &stderr, fixture.options...)
+			if code != 0 || err != nil {
+				t.Fatalf("second run = (%d, %v); stderr: %s", code, err, &stderr)
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("successful run wrote diagnostics: %s", &stderr)
+			}
+			assertStaticImageOutput(t, stdout.String())
+			requests := fixture.recorded()
+			if len(requests) != wantRequests {
+				t.Fatalf("requests = %#v, want %d", requests, wantRequests)
+			}
+			want := url.Values{"key": {"second-key"}, "center": {"Tokyo"}, "zoom": {"8"}, "size": {"2x3"}}
+			if got := requests[len(requests)-1]; !reflect.DeepEqual(got, want) {
+				t.Errorf("second invocation retained flags: %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestStaticRunSDKErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		body         []byte
+		args         []string
+		want         string
+		wantRequests int
+	}{
+		{"HTTP rejection", http.StatusForbidden, []byte("fixture denied this map"), []string{"-size=2x3"}, "Maps Static API: 403 - fixture denied this map", 1},
+		{"invalid image", http.StatusOK, []byte("not a PNG"), []string{"-size=2x3"}, "image: unknown format", 1},
+		{"missing size", http.StatusOK, nil, nil, "maps: Size empty", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newStaticFixture(t, tt.status, tt.body)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"-key=offline-key", "-center=Paris", "-zoom=12"}, tt.args...)
+			code, err := run(ctx, args, &stdout, &stderr, fixture.options...)
+			if code != 1 || err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("run = (%d, %v), want service failure containing %q", code, err, tt.want)
+			}
+			if requests := fixture.recorded(); len(requests) != tt.wantRequests {
+				t.Errorf("requests = %#v, want %d", requests, tt.wantRequests)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("SDK error should return to caller, stdout = %q, stderr = %q", &stdout, &stderr)
+			}
+		})
+	}
+}
+
+type staticErrorWriter struct{ err error }
+
+func (w staticErrorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestStaticRunWriterError(t *testing.T) {
+	fixture := newStaticFixture(t, http.StatusOK, staticImageBytes(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	want := errors.New("fixture output unavailable")
+	var stderr bytes.Buffer
+	code, err := run(ctx, []string{"-key=offline-key", "-center=Paris", "-zoom=12", "-size=2x3"}, staticErrorWriter{want}, &stderr, fixture.options...)
+	if code != 1 || !errors.Is(err, want) {
+		t.Errorf("run = (%d, %v), want output failure %v", code, err, want)
+	}
+	if requests := fixture.recorded(); len(requests) != 1 {
+		t.Errorf("requests = %#v, want one decoded response before writing", requests)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("output error should return to caller, stderr = %q", &stderr)
+	}
+}
+
+func TestStaticRunCanceledContext(t *testing.T) {
+	fixture := newStaticFixture(t, http.StatusOK, staticImageBytes(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	code, err := run(ctx, []string{"-key=offline-key", "-center=Paris", "-zoom=12", "-size=2x3"}, &stdout, &stderr, fixture.options...)
+	if code != 1 || !errors.Is(err, context.Canceled) {
+		t.Errorf("run = (%d, %v), want canceled service error", code, err)
+	}
+	if requests := fixture.recorded(); len(requests) != 0 {
+		t.Errorf("canceled invocation dispatched HTTP: %#v", requests)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("cancellation wrote output: stdout = %q, stderr = %q", &stdout, &stderr)
+	}
 }

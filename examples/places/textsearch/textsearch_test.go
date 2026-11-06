@@ -1,65 +1,163 @@
-// Copyright 2026 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package main
 
 import (
-	"os"
-	"os/exec"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"googlemaps.github.io/maps"
 )
 
-func TestParsePriceLevels(t *testing.T) {
-	tests := []struct {
-		name    string
-		minimum string
-		maximum string
-		wantMin maps.PriceLevel
-		wantMax maps.PriceLevel
-	}{
-		{"minimum only", "2", "", maps.PriceLevelModerate, ""},
-		{"free minimum", "0", "", maps.PriceLevelFree, ""},
-		{"free maximum", "", "0", "", maps.PriceLevelFree},
-		{"inexpensive maximum", "", "1", "", maps.PriceLevelInexpensive},
-		{"moderate maximum", "", "2", "", maps.PriceLevelModerate},
-		{"expensive maximum", "", "3", "", maps.PriceLevelExpensive},
-		{"very expensive maximum", "", "4", "", maps.PriceLevelVeryExpensive},
-		{"distinct bounds", "1", "4", maps.PriceLevelInexpensive, maps.PriceLevelVeryExpensive},
+const searchResponse = `{"status":"OK","results":[{"name":"Harbor Cafe","place_id":"harbor-42","rating":4.5,"geometry":{"location":{"lat":12.25,"lng":-45.5}},"formatted_address":"7 Pier Lane"}],"next_page_token":"page-two"}`
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("output unavailable") }
+
+func fixtureRun(t *testing.T, args []string, response string, writer io.Writer) (int, error, string, []url.Values) {
+	t.Helper()
+	var requests []url.Values
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/maps/api/place/textsearch/json" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		mu.Lock()
+		requests = append(requests, r.URL.Query())
+		mu.Unlock()
+		fmt.Fprint(w, response)
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var output, diagnostics bytes.Buffer
+	if writer == nil {
+		writer = &output
 	}
-	for _, tt := range tests {
+	code, err := run(ctx, args, writer, &diagnostics, maps.WithBaseURL(server.URL), maps.WithHTTPClient(server.Client()))
+	mu.Lock()
+	defer mu.Unlock()
+	return code, err, output.String(), requests
+}
+
+func TestRunPriceBounds(t *testing.T) {
+	cases := []struct{ name, min, max string }{
+		{"omitted", "", ""}, {"minimum only", "2", ""}, {"free minimum", "0", ""},
+		{"free maximum", "", "0"}, {"inexpensive maximum", "", "1"}, {"moderate maximum", "", "2"},
+		{"expensive maximum", "", "3"}, {"very expensive maximum", "", "4"}, {"distinct bounds", "1", "4"},
+	}
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			var request maps.TextSearchRequest
-			parsePriceLevels(tt.minimum, tt.maximum, &request)
-			if request.MinPrice != tt.wantMin || request.MaxPrice != tt.wantMax {
-				t.Errorf("price bounds = (%q, %q), want (%q, %q)", request.MinPrice, request.MaxPrice, tt.wantMin, tt.wantMax)
+			args := append([]string{}, validArgs...)
+			if tt.min != "" {
+				args = append(args, "-min_price="+tt.min)
+			}
+			if tt.max != "" {
+				args = append(args, "-max_price="+tt.max)
+			}
+			code, err, output, requests := fixtureRun(t, args, searchResponse, nil)
+			if code != 0 || err != nil {
+				t.Fatalf("run = %d, %v", code, err)
+			}
+			if len(requests) != 1 {
+				t.Fatalf("requests = %v", requests)
+			}
+			for key, want := range map[string]string{"minprice": tt.min, "maxprice": tt.max} {
+				got, present := requests[0][key]
+				if present != (want != "") || (present && (len(got) != 1 || got[0] != want)) {
+					t.Errorf("%s = %v (present %v), want %q", key, got, present, want)
+				}
+			}
+			for _, want := range []string{"Harbor Cafe", "harbor-42", "4.5", "12.25", "-45.5", "page-two"} {
+				if !strings.Contains(output, want) {
+					t.Errorf("decoded output missing %q: %s", want, output)
+				}
 			}
 		})
 	}
 }
 
-func TestInvalidMaximumPrice(t *testing.T) {
-	if os.Getenv("GO_TEXT_PRICE_HELPER") == "1" {
-		var request maps.TextSearchRequest
-		parsePriceLevels("1", "not-a-price", &request)
-		return
+func TestRunInvalidInputAndHelp(t *testing.T) {
+	cases := [][]string{
+		{"-min_price=-1"}, {"-min_price=5"}, {"-max_price=5"}, {"-min_price=1", "-max_price=not-a-price"},
+		{"-location=1"}, {"-location=1,no"}, {"-location=1,2,3"}, {"-type=not-a-place-type"}, {"-radius=-1"}, {"-unknown"}, {"extra"},
+		{"-location=1,2"},
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestInvalidMaximumPrice$")
-	cmd.Env = append(os.Environ(), "GO_TEXT_PRICE_HELPER=1")
-	output, err := cmd.CombinedOutput()
-	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 {
-		t.Fatalf("invalid maximum with a valid minimum: error = %v, want exit status 2; output: %s", err, output)
+	for _, extra := range cases {
+		args := append(append([]string{}, validArgs...), extra...)
+		code, _, output, requests := fixtureRun(t, args, searchResponse, nil)
+		if code != 2 || len(requests) != 0 || output != "" {
+			t.Errorf("%v: code=%d output=%q requests=%v", extra, code, output, requests)
+		}
+	}
+	code, err, _, requests := fixtureRun(t, []string{"-help"}, searchResponse, nil)
+	if code != 0 || err != nil || len(requests) != 0 {
+		t.Fatalf("help = %d, %v, %v", code, err, requests)
+	}
+}
+
+func TestRunErrorBoundaries(t *testing.T) {
+	for _, response := range []string{`{"status":"REQUEST_DENIED","error_message":"fixture denied"}`, `not json`} {
+		code, err, output, requests := fixtureRun(t, validArgs, response, nil)
+		if code != 1 || err == nil || output != "" || len(requests) != 1 {
+			t.Errorf("service failure = %d, %v, %q, %v", code, err, output, requests)
+		}
+		if strings.Contains(response, "fixture denied") && (err == nil || !strings.Contains(err.Error(), "fixture denied")) {
+			t.Errorf("service error lost: %v", err)
+		}
+	}
+	code, err, _, _ := fixtureRun(t, validArgs, searchResponse, brokenWriter{})
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "output unavailable") {
+		t.Errorf("write failure = %d, %v", code, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output bytes.Buffer
+	code, err = run(ctx, validArgs, &output, &output, maps.WithBaseURL("http://127.0.0.1:1"))
+	if code != 1 || !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled request = %d, %v", code, err)
+	}
+}
+
+var validArgs = []string{"-key=fixture", "-query=coffee"}
+
+func TestRunSearchSelectionAndIsolation(t *testing.T) {
+	cases := []struct {
+		args   []string
+		want   map[string]string
+		absent []string
+	}{
+		{[]string{"-key=fixture", "-query=tea near docks", "-location=12.5,-4", "-radius=250", "-type=cafe", "-language=fr", "-open_now"}, map[string]string{"query": "tea near docks", "location": "12.5,-4", "radius": "250", "type": "cafe", "language": "fr", "opennow": "true"}, nil},
+		{validArgs, map[string]string{"query": "coffee"}, []string{"location", "radius", "type", "language", "opennow", "minprice", "maxprice"}},
+		{[]string{"-key=fixture", "-type=cafe"}, map[string]string{"type": "cafe"}, nil},
+	}
+	for _, tt := range cases {
+		code, err, _, requests := fixtureRun(t, tt.args, searchResponse, nil)
+		if code != 0 || err != nil || len(requests) != 1 {
+			t.Fatalf("run = %d, %v, %v", code, err, requests)
+		}
+		for key, want := range tt.want {
+			if requests[0].Get(key) != want {
+				t.Errorf("%s = %q, want %q", key, requests[0].Get(key), want)
+			}
+		}
+		for _, key := range tt.absent {
+			if _, ok := requests[0][key]; ok {
+				t.Errorf("unexpected %s in %v", key, requests[0])
+			}
+		}
+	}
+	code, _, _, requests := fixtureRun(t, []string{"-key=fixture"}, searchResponse, nil)
+	if code != 2 || len(requests) != 0 {
+		t.Errorf("missing query/type: %d, %v", code, requests)
 	}
 }

@@ -26,66 +26,82 @@ import (
 	"image"
 	"image/jpeg"
 	"io"
-	"log"
 	"os"
 
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey         = flag.String("key", "", "API Key for using Google Maps API.")
-	photoreference = flag.String("photoreference", "", "Textual identifier that uniquely identifies a place photo.")
-	maxheight      = flag.Int("maxheight", 0, "Specifies the maximum desired height, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
-	maxwidth       = flag.Int("maxwidth", 0, "Specifies the maximum desired width, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
-	basename       = flag.String("basename", "", "Base name of JPEG output file; success is reported after the file is closed. If omitted, no file is written.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
 
-	var client *maps.Client
-	var err error
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("photo", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API Key for using Google Maps API.")
+	photoreference := flags.String("photoreference", "", "Textual identifier that uniquely identifies a place photo.")
+	maxheight := flags.Int("maxheight", 0, "Specifies the maximum desired height, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
+	maxwidth := flags.Int("maxwidth", 0, "Specifies the maximum desired width, in pixels, of the image returned by the Place Photos service. One of maxheight and maxwidth is required.")
+	basename := flags.String("basename", "", "Base name of JPEG output file; success is reported after the file is closed. If omitted, no file is written.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
 	if *apiKey == "" {
-		usageAndExit("Please specify an API Key.")
+		return 2, fmt.Errorf("Please specify an API Key.")
 	}
-	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	check(err)
-
+	if *photoreference == "" {
+		return 2, fmt.Errorf("Please specify a photo reference.")
+	}
+	if *maxheight < 0 || *maxwidth < 0 || (*maxheight == 0 && *maxwidth == 0) {
+		return 2, fmt.Errorf("Please specify a positive maxheight or maxwidth; dimensions cannot be negative.")
+	}
 	r := &maps.PlacePhotoRequest{
-		PhotoReference: *photoreference,
-		MaxHeight:      uint(*maxheight),
-		MaxWidth:       uint(*maxwidth),
+		PhotoReference: *photoreference, MaxHeight: uint(*maxheight), MaxWidth: uint(*maxwidth),
 	}
-
-	resp, err := client.PlacePhoto(context.Background(), r)
-	check(err)
-
-	log.Printf("Content-Type: %v\n", resp.ContentType)
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
+	options = append(options, clientOptions...)
+	options = append(options, maps.WithAPIKey(*apiKey))
+	client, err := maps.NewClient(options...)
+	if err != nil {
+		return 1, err
+	}
+	resp, err := client.PlacePhoto(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := fmt.Fprintf(stderr, "Content-Type: %v\n", resp.ContentType); err != nil {
+		resp.Data.Close()
+		return 1, err
+	}
+	// Image consumes and closes the response stream, including on decode errors.
 	img, err := resp.Image()
-	check(err)
-	log.Printf("Image bounds: %v", img.Bounds())
-
-	if *basename != "" {
-		filename := fmt.Sprintf("%s.%s", *basename, "jpg")
-		f, err := os.Create(filename)
-		check(err)
-		check(writeJPEG(f, img))
-
-		log.Printf("Wrote image to %s\n", filename)
+	if err != nil {
+		return 1, err
 	}
+	if _, err := fmt.Fprintf(stderr, "Image bounds: %v\n", img.Bounds()); err != nil {
+		return 1, err
+	}
+	if *basename != "" {
+		filename := fmt.Sprintf("%s.jpg", *basename)
+		f, err := os.Create(filename)
+		if err != nil {
+			return 1, err
+		}
+		if err := writeJPEG(f, img); err != nil {
+			return 1, err
+		}
+		if _, err := fmt.Fprintf(stderr, "Wrote image to %s\n", filename); err != nil {
+			return 1, err
+		}
+	}
+	return 0, nil
 }
 
 // writeJPEG owns out and closes it before returning, preserving an encode error

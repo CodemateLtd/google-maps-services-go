@@ -19,7 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strings"
 
@@ -27,82 +27,108 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey       = flag.String("key", "", "API Key for using Google Maps API.")
-	input        = flag.String("input", "", "The text input specifying which place to search for (for example, a name, address, or phone number).")
-	inputType    = flag.String("inputtype", "", "The type of input. This can be one of either textquery or phonenumber.")
-	fields       = flag.String("fields", "", "Comma seperated list of Fields")
-	locationbias = flag.String("locationbias", "", "Location bias for this request. Optional. One of ipbias, point, circle, or rectangle.")
-	point        = flag.String("point", "", "The latitude/longitude for location bias point. This must be specified as latitude,longitude.")
-	center       = flag.String("center", "", "The center latitude/longitude for location bias circle. This must be specified as latitude,longitude.")
-	radius       = flag.Int("radius", 0, "The radius for location bias circle.")
-	southwest    = flag.String("southwest", "", "The South West latitude/longitude for location bias rectangle. This must be specified as latitude,longitude.")
-	northeast    = flag.String("northeast", "", "The North East latitude/longitude for location bias rectangle. This must be specified as latitude,longitude.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
 
-	var client *maps.Client
-	var err error
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("findplacefromtext", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API Key for using Google Maps API.")
+	input := flags.String("input", "", "Place name, address or phone number.")
+	inputType := flags.String("inputtype", "", "textquery or phonenumber.")
+	fields := flags.String("fields", "", "Comma separated field masks.")
+	locationBias := flags.String("locationbias", "", "ipbias, point, circle or rectangle.")
+	point := flags.String("point", "", "Point latitude,longitude.")
+	center := flags.String("center", "", "Circle center latitude,longitude.")
+	radius := flags.Int("radius", 0, "Circle radius.")
+	southwest := flags.String("southwest", "", "Rectangle southwest latitude,longitude.")
+	northeast := flags.String("northeast", "", "Rectangle northeast latitude,longitude.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected positional arguments")
+	}
 	if *apiKey == "" {
-		usageAndExit("Please specify an API Key.")
+		return 2, fmt.Errorf("Please specify an API Key.")
 	}
-	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	check(err)
-
-	r := &maps.FindPlaceFromTextRequest{
-		Input:     *input,
-		InputType: parseInputType(*inputType),
+	if *input == "" {
+		return 2, fmt.Errorf("input required")
 	}
-
-	if *locationbias != "" {
-		lb, err := maps.ParseFindPlaceFromTextLocationBiasType(*locationbias)
-		check(err)
+	r := &maps.FindPlaceFromTextRequest{Input: *input}
+	switch *inputType {
+	case "textquery":
+		r.InputType = maps.FindPlaceFromTextInputTypeTextQuery
+	case "phonenumber":
+		r.InputType = maps.FindPlaceFromTextInputTypePhoneNumber
+	default:
+		return 2, fmt.Errorf("unknown input type: %q", *inputType)
+	}
+	if *locationBias != "" {
+		lb, err := maps.ParseFindPlaceFromTextLocationBiasType(*locationBias)
+		if err != nil {
+			return 2, err
+		}
 		r.LocationBias = lb
 		switch lb {
 		case maps.FindPlaceFromTextLocationBiasPoint:
-			l, err := maps.ParseLatLng(*point)
-			check(err)
+			l, err := parseLocation(*point)
+			if err != nil {
+				return 2, err
+			}
 			r.LocationBiasPoint = &l
 		case maps.FindPlaceFromTextLocationBiasCircular:
-			l, err := maps.ParseLatLng(*center)
-			check(err)
+			l, err := parseLocation(*center)
+			if err != nil {
+				return 2, err
+			}
 			r.LocationBiasCenter = &l
 			r.LocationBiasRadius = *radius
+			if *radius == 0 {
+				return 2, fmt.Errorf("circle radius required")
+			}
 		case maps.FindPlaceFromTextLocationBiasRectangular:
-			sw, err := maps.ParseLatLng(*southwest)
-			check(err)
-			r.LocationBiasSouthWest = &sw
-			ne, err := maps.ParseLatLng(*northeast)
-			check(err)
-			r.LocationBiasNorthEast = &ne
+			sw, err := parseLocation(*southwest)
+			if err != nil {
+				return 2, err
+			}
+			ne, err := parseLocation(*northeast)
+			if err != nil {
+				return 2, err
+			}
+			r.LocationBiasSouthWest, r.LocationBiasNorthEast = &sw, &ne
 		}
 	}
-
 	if *fields != "" {
 		f, err := parseFields(*fields)
-		check(err)
+		if err != nil {
+			return 2, err
+		}
 		r.Fields = f
 	}
-
-	resp, err := client.FindPlaceFromText(context.Background(), r)
-	check(err)
-
-	pretty.Println(resp)
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
+	options = append(options, clientOptions...)
+	options = append(options, maps.WithAPIKey(*apiKey))
+	client, err := maps.NewClient(options...)
+	if err != nil {
+		return 2, err
+	}
+	resp, err := client.FindPlaceFromText(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
 func parseFields(fields string) ([]maps.PlaceSearchFieldMask, error) {
@@ -117,15 +143,9 @@ func parseFields(fields string) ([]maps.PlaceSearchFieldMask, error) {
 	return res, nil
 }
 
-func parseInputType(inputType string) maps.FindPlaceFromTextInputType {
-	var it maps.FindPlaceFromTextInputType
-	switch inputType {
-	case "textquery":
-		it = maps.FindPlaceFromTextInputTypeTextQuery
-	case "phonenumber":
-		it = maps.FindPlaceFromTextInputTypePhoneNumber
-	default:
-		usageAndExit(fmt.Sprintf("Unknown input type: '%s'", inputType))
+func parseLocation(value string) (maps.LatLng, error) {
+	if strings.Count(value, ",") != 1 {
+		return maps.LatLng{}, fmt.Errorf("location must be latitude,longitude")
 	}
-	return it
+	return maps.ParseLatLng(value)
 }

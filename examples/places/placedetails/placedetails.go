@@ -23,7 +23,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strings"
 
@@ -31,50 +31,55 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey  = flag.String("key", "", "API Key for using Google Maps API.")
-	placeID = flag.String("place_id", "", "Textual identifier that uniquely identifies a place.")
-	fields  = flag.String("fields", "", "Comma seperated list of Fields")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
 
-	var client *maps.Client
-	var err error
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("placedetails", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API Key for using Google Maps API.")
+	placeID := flags.String("place_id", "", "Textual identifier that uniquely identifies a place.")
+	fields := flags.String("fields", "", "Comma separated list of Fields")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
 	if *apiKey == "" {
-		usageAndExit("Please specify an API Key.")
+		return 2, fmt.Errorf("Please specify an API Key.")
 	}
-	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	check(err)
-
-	r := &maps.PlaceDetailsRequest{
-		PlaceID: *placeID,
+	if *placeID == "" {
+		return 2, fmt.Errorf("Please specify a place ID.")
 	}
-
+	r := &maps.PlaceDetailsRequest{PlaceID: *placeID}
 	if *fields != "" {
 		f, err := parseFields(*fields)
-		check(err)
+		if err != nil {
+			return 2, err
+		}
 		r.Fields = f
 	}
-
-	resp, err := client.PlaceDetails(context.Background(), r)
-	check(err)
-
-	pretty.Println(resp)
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
+	options = append(options, clientOptions...)
+	options = append(options, maps.WithAPIKey(*apiKey))
+	client, err := maps.NewClient(options...)
+	if err != nil {
+		return 1, err
+	}
+	resp, err := client.PlaceDetails(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
 func parseFields(fields string) ([]maps.PlaceDetailsFieldMask, error) {

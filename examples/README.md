@@ -176,6 +176,23 @@ Custom icons accept named anchors or nonnegative pixel coordinates such as
 `"12,24"`, and scales 1, 2 or 4. Do not combine icon settings with ordinary
 marker color, label or size. Style strings use the
 [Maps Static styling syntax](https://developers.google.com/maps/documentation/maps-static/styling).
-Use explicit center/zoom for path- or visible-only examples on the current SDK;
-this command does not change the SDK's viewport validation. Output remains a
-decoded Go image value, not a saved image file.
+Markers, paths or visible points can supply the viewport without explicit
+center/zoom. Output remains a decoded Go image value, not a saved image file.
+
+## Offline regression tests
+
+```sh
+go test -race ./examples/...
+```
+
+The fifteen command-line examples use local HTTP fixtures in their tests; no
+Google Maps credentials or live API calls are needed. Coverage includes parsed
+request options, credential selection, repeated-run isolation, decoded results,
+service/decode failures and output errors. Image tests check decoded pixels and
+saved JPEG files; concurrent Directions tests do not depend on result ordering.
+
+Each command keeps its flags and output local to an error-returning `run`
+function. The executable reports errors and exits: 0 for success or help, 2 for
+usage errors, and 1 for request or output failures. Directions batches retain
+their existing behavior: each failed iteration is reported on stdout while the
+batch exits successfully.

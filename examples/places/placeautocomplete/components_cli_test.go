@@ -15,164 +15,107 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
+	"bytes"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"os"
-	"os/exec"
 	"strings"
-	"sync"
 	"testing"
-	"time"
+
+	"github.com/google/uuid"
 )
 
-type componentsCLITransport func(*http.Request) (*http.Response, error)
-
-func (f componentsCLITransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
-func TestPlaceAutocompleteComponentsProcess(t *testing.T) {
-	fixtureURL := os.Getenv("GO_AUTOCOMPLETE_COMPONENTS_FIXTURE")
-	if fixtureURL == "" {
-		return
-	}
-	target, err := url.Parse(fixtureURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base := http.DefaultTransport
-	http.DefaultTransport = componentsCLITransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "maps.googleapis.com" || r.URL.Path != "/maps/api/place/autocomplete/json" {
-			return nil, fmt.Errorf("unexpected autocomplete request: %s", r.URL)
-		}
-		r.URL.Scheme = target.Scheme
-		r.URL.Host = target.Host
-		return base.RoundTrip(r)
-	})
-	defer func() { http.DefaultTransport = base }()
-	os.Args = []string{os.Args[0], "-key=offline-fixture-key", "-input=Springfield"}
-	if os.Getenv("GO_AUTOCOMPLETE_COMPONENTS_FLAG") == "1" {
-		os.Args = append(os.Args, "-components="+os.Getenv("GO_AUTOCOMPLETE_COMPONENTS_VALUE"))
-	}
-	main()
-}
-
-func TestPlaceAutocompleteComponentsCLI(t *testing.T) {
-	places := []struct {
-		country     string
-		description string
+func TestComponentsCLI(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		include     bool
 	}{
-		{"us", "FixtureSpringfieldUS"},
-		{"ca", "FixtureSpringfieldCA"},
-		{"gb", "FixtureSpringfieldGB"},
-	}
-	tests := []struct {
-		name          string
-		components    string
-		includeFlag   bool
-		wantCountries string
-		invalid       bool
-	}{
-		{name: "single country", components: "country:us", includeFlag: true, wantCountries: "us"},
-		{name: "repeated countries", components: "country:us|country:ca", includeFlag: true, wantCountries: "us,ca"},
-		{name: "omitted", wantCountries: "us,ca,gb"},
-		{name: "explicit empty", includeFlag: true, wantCountries: "us,ca,gb"},
-		{name: "missing colon", components: "country", includeFlag: true, invalid: true},
-		{name: "empty country", components: "country:", includeFlag: true, invalid: true},
-		{name: "extra colon", components: "country:us:ca", includeFlag: true, invalid: true},
-		{name: "unknown component", components: "locality:Springfield", includeFlag: true, invalid: true},
-		{name: "empty later token", components: "country:us|", includeFlag: true, invalid: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var requests []url.Values
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				query := r.URL.Query()
-				mu.Lock()
-				requests = append(requests, query)
-				mu.Unlock()
-				if r.Method != http.MethodGet || r.URL.Path != "/maps/api/place/autocomplete/json" || query.Get("input") != "Springfield" || query.Get("key") != "offline-fixture-key" {
-					t.Errorf("unexpected autocomplete request: %s %s", r.Method, r.URL)
-					http.Error(w, "unexpected request", http.StatusBadRequest)
-					return
-				}
-				// Model country filtering over a fixed cross-country result set,
-				// rather than returning the query or an injected SDK request.
-				allowed := make(map[string]bool)
-				if components := query.Get("components"); components != "" {
-					for _, token := range strings.Split(components, "|") {
-						allowed[strings.TrimPrefix(token, "country:")] = true
-					}
-				}
-				predictions := make([]map[string]string, 0, len(places))
-				for _, place := range places {
-					if len(allowed) == 0 || allowed[place.country] {
-						predictions = append(predictions, map[string]string{"description": place.description})
-					}
-				}
-				w.Header().Set("Content-Type", "application/json")
-				if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "OK", "predictions": predictions}); err != nil {
-					t.Errorf("writing autocomplete fixture: %v", err)
-				}
-			}))
-			defer server.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPlaceAutocompleteComponentsProcess$")
-			includeFlag := "0"
-			if tt.includeFlag {
-				includeFlag = "1"
+		{"single country", "country:us", true},
+		{"repeated countries", "country:us|country:ca", true},
+		{"spelling and duplicates", "country:us|country:CA|country:us", true},
+		{"omitted", "", false},
+		{"explicit empty", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			options, requests := fixture(t, http.StatusOK, "application/json", []byte(`{"status":"OK","predictions":[{"description":"Fixture Springfield","place_id":"springfield-id","terms":[{"offset":0,"value":"Springfield"}]}]}`))
+			args := []string{"-key=offline-fixture-key", "-input=Springfield"}
+			if tc.include {
+				args = append(args, "-components="+tc.value)
 			}
-			cmd.Env = append(os.Environ(),
-				"GO_AUTOCOMPLETE_COMPONENTS_FIXTURE="+server.URL,
-				"GO_AUTOCOMPLETE_COMPONENTS_FLAG="+includeFlag,
-				"GO_AUTOCOMPLETE_COMPONENTS_VALUE="+tt.components,
-			)
-			output, err := cmd.CombinedOutput()
-			mu.Lock()
-			gotRequests := append([]url.Values(nil), requests...)
-			mu.Unlock()
-			if tt.invalid {
-				if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() == 0 {
-					t.Fatalf("invalid components did not fail in the CLI: %v; output: %s", err, output)
-				}
-				if len(gotRequests) != 0 {
-					t.Errorf("invalid components reached HTTP: %#v", gotRequests)
-				}
-				if !strings.Contains(string(output), "component") {
-					t.Errorf("failure did not identify a component error: %s", output)
-				}
-				return
+			var stdout, stderr bytes.Buffer
+			code, err := invoke(t, args, &stdout, &stderr, options)
+			if code != 0 || err != nil {
+				t.Fatalf("run = (%d, %v)", code, err)
 			}
-			if err != nil {
-				t.Fatalf("autocomplete CLI failed: %v; output: %s", err, output)
+			if len(requests) != 1 {
+				t.Fatalf("requests = %d, want 1", len(requests))
 			}
-			if len(gotRequests) != 1 {
-				t.Fatalf("HTTP requests = %d, want 1", len(gotRequests))
-			}
-			if tt.components == "" {
-				if _, present := gotRequests[0]["components"]; present {
-					t.Errorf("omitted components sent a query parameter: %#v", gotRequests[0])
+			query := <-requests
+			if tc.value == "" {
+				if _, present := query["components"]; present {
+					t.Errorf("empty components sent: %v", query)
 				}
-			} else if got := gotRequests[0]["components"]; len(got) != 1 || got[0] != tt.components {
-				t.Errorf("components query = %#v, want [%s]", got, tt.components)
+			} else if values := query["components"]; len(values) != 1 || values[0] != tc.value {
+				t.Errorf("components = %v, want %s", values, tc.value)
 			}
-			for _, place := range places {
-				wantCount := 0
-				for _, country := range strings.Split(tt.wantCountries, ",") {
-					if country == place.country {
-						wantCount = 1
-					}
-				}
-				if got := strings.Count(string(output), place.description); got != wantCount {
-					t.Errorf("prediction %s appears %d times, want %d; output: %s", place.description, got, wantCount, output)
+			for _, value := range []string{"Fixture Springfield", "springfield-id", "Springfield"} {
+				if !strings.Contains(stdout.String(), value) {
+					t.Errorf("output lacks decoded %q: %s", value, &stdout)
 				}
 			}
 		})
+	}
+}
+
+func TestComponentsRejectMalformedBeforeHTTP(t *testing.T) {
+	options, requests := fixture(t, http.StatusOK, "application/json", []byte(`{"status":"OK"}`))
+	for _, value := range []string{"country", "us", ":us", "country:", ":", "country:us:ca", "country:us:", "locality:Paris", "unknown:value", "|", "|country:us", "country:us|", "country:us||country:ca", "country:us|country", "country:us|country:", "country:us|unknown:value"} {
+		t.Run(value, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code, err := invoke(t, []string{"-key=fixture", "-input=Springfield", "-components=" + value}, &stdout, &stderr, options)
+			if code != 2 || err == nil || !strings.Contains(err.Error(), "component") {
+				t.Errorf("run = (%d, %v), want component usage error", code, err)
+			}
+			if len(requests) != 0 {
+				t.Fatalf("invalid components reached HTTP")
+			}
+		})
+	}
+}
+
+func TestRunOptionsAndIsolation(t *testing.T) {
+	options, requests := fixture(t, http.StatusOK, "application/json", []byte(`{"status":"OK","predictions":[{"description":"Sydney Opera House","place_id":"opera-house","distance_meters":245,"structured_formatting":{"main_text":"Opera House","secondary_text":"Sydney"}}]}`))
+	var previousToken string
+	for i, extra := range [][]string{
+		{"-location=-33.8560,151.2150", "-radius=500", "-offset=3", "-language=fr", "-types=ESTABLISHMENT", "-strictbounds", "-components=country:au|country:nz"},
+		nil,
+	} {
+		var stdout, stderr bytes.Buffer
+		code, err := invoke(t, append([]string{"-key=fixture", "-input=Opera"}, extra...), &stdout, &stderr, options)
+		if code != 0 || err != nil {
+			t.Fatalf("run %d = (%d, %v)", i, code, err)
+		}
+		if len(requests) != 1 {
+			t.Fatalf("requests = %d", len(requests))
+		}
+		query := <-requests
+		token := query.Get("sessiontoken")
+		parsed, err := uuid.Parse(token)
+		if err != nil || parsed == uuid.Nil || token == previousToken {
+			t.Errorf("session token = %q, previous = %q", token, previousToken)
+		}
+		previousToken = token
+		for key, want := range map[string]string{"location": "-33.856,151.215", "radius": "500", "offset": "3", "language": "fr", "types": "establishment", "strictbounds": "true", "components": "country:au|country:nz"} {
+			if i == 0 {
+				if query.Get(key) != want {
+					t.Errorf("%s = %q, want %q", key, query.Get(key), want)
+				}
+			} else if _, present := query[key]; present {
+				t.Errorf("second run retained %s: %v", key, query)
+			}
+		}
+		for _, value := range []string{"Sydney Opera House", "opera-house", "245", "Opera House", "Sydney"} {
+			if !strings.Contains(stdout.String(), value) {
+				t.Errorf("decoded output lacks %q: %s", value, &stdout)
+			}
+		}
 	}
 }

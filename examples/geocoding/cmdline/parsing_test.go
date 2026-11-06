@@ -15,160 +15,128 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
-	"os"
-	"os/exec"
+	"bytes"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
-
-	"googlemaps.github.io/maps"
 )
 
-func TestGeocodingParsersRejectMalformedInput(t *testing.T) {
-	tests := []struct {
+func TestGeocodingInvalidCLI(t *testing.T) {
+	server, queries := geocodingServer(t, geocodingFixture)
+	for _, tt := range []struct {
 		name   string
-		parse  func(string, *maps.GeocodingRequest) error
 		inputs []string
 	}{
-		{
-			name:  "components",
-			parse: parseComponents,
-			inputs: []string{
-				"country", "country:", ":US", ":", "country:US:CA",
-				"country:US|", "|country:US", "country:US||route:Main",
-				"unknown:value", "country:US|locality",
-			},
-		},
-		{
-			name:  "bounds",
-			parse: parseBounds,
-			inputs: []string{
-				"1,2", "1,2|3,4|5,6", "|3,4", "1,2|", "|",
-				"1|3,4", "1,2|3", "1,2,3|4,5", "1,2|3,4,5",
-				",2|3,4", "1,|3,4", "1,2|,4", "1,2|3,",
-				"bad,2|3,4", "1,bad|3,4", "1,2|bad,4", "1,2|3,bad",
-			},
-		},
-		{
-			name:  "latlng",
-			parse: parseLatLng,
-			inputs: []string{
-				"1", "1,2,3", ",2", "1,", ",", "bad,2", "1,bad", "1|2",
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			for _, input := range tt.inputs {
-				t.Run(input, func(t *testing.T) {
-					err := tt.parse(input, &maps.GeocodingRequest{})
-					if err == nil || !strings.Contains(err.Error(), "parse") {
-						t.Fatalf("parse(%q) error = %v, want a contextual parsing error", input, err)
-					}
-				})
-			}
-		})
-	}
-}
-
-func TestGeocodingParsersPreserveValidValues(t *testing.T) {
-	r := &maps.GeocodingRequest{}
-	if err := parseComponents("route:Main Street|locality:Example City|administrative_area:Example State|postal_code:00123|country:US|country:CA", r); err != nil {
-		t.Fatal(err)
-	}
-	wantComponents := map[maps.Component]string{
-		maps.ComponentRoute:              "Main Street",
-		maps.ComponentLocality:           "Example City",
-		maps.ComponentAdministrativeArea: "Example State",
-		maps.ComponentPostalCode:         "00123",
-		maps.ComponentCountry:            "CA",
-	}
-	if !reflect.DeepEqual(r.Components, wantComponents) {
-		t.Errorf("components = %#v, want %#v (last duplicate wins)", r.Components, wantComponents)
-	}
-	if err := parseBounds("-12.5,-45.25|23.75,67.125", r); err != nil {
-		t.Fatal(err)
-	}
-	wantBounds := &maps.LatLngBounds{
-		SouthWest: maps.LatLng{Lat: -12.5, Lng: -45.25},
-		NorthEast: maps.LatLng{Lat: 23.75, Lng: 67.125},
-	}
-	if !reflect.DeepEqual(r.Bounds, wantBounds) {
-		t.Errorf("bounds = %#v, want southwest/northeast %#v", r.Bounds, wantBounds)
-	}
-	if err := parseLatLng("-12.5,67.125", r); err != nil {
-		t.Fatal(err)
-	}
-	if want := (maps.LatLng{Lat: -12.5, Lng: 67.125}); r.LatLng == nil || *r.LatLng != want {
-		t.Errorf("latlng = %#v, want %#v", r.LatLng, want)
-	}
-	// These parsers validate syntax, not geographic ranges.
-	if err := parseLatLng("91,181", r); err != nil {
-		t.Fatalf("unexpected geographic policy: %v", err)
-	}
-	if r.LatLng.Lat != 91 || r.LatLng.Lng != 181 {
-		t.Errorf("out-of-range numeric values changed: %#v", r.LatLng)
-	}
-}
-
-func TestGeocodingEmptyOptionalFlagsAreOmitted(t *testing.T) {
-	for _, populated := range []bool{false, true} {
-		r := &maps.GeocodingRequest{}
-		if populated {
-			r.Components = map[maps.Component]string{maps.ComponentCountry: "US"}
-			r.Bounds = &maps.LatLngBounds{SouthWest: maps.LatLng{Lat: 1, Lng: 2}, NorthEast: maps.LatLng{Lat: 3, Lng: 4}}
-			r.LatLng = &maps.LatLng{Lat: 5, Lng: 6}
-		}
-		want := *r
-		for _, parse := range []func(string, *maps.GeocodingRequest) error{parseComponents, parseBounds, parseLatLng} {
-			if err := parse("", r); err != nil {
-				t.Fatalf("empty optional flag: %v", err)
-			}
-		}
-		if !reflect.DeepEqual(*r, want) {
-			t.Errorf("empty flags changed request: got %#v, want %#v", *r, want)
-		}
-	}
-}
-
-type parsingTransport func(*http.Request) (*http.Response, error)
-
-func (f parsingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
-func TestGeocodingInvalidCLI(t *testing.T) {
-	if os.Getenv("GO_GEOCODING_PARSING_HELPER") == "1" {
-		http.DefaultTransport = parsingTransport(func(*http.Request) (*http.Response, error) {
-			fmt.Fprintln(os.Stderr, "unexpected-geocoding-dispatch")
-			return nil, fmt.Errorf("network disabled for invalid-input fixture")
-		})
-		os.Args = []string{os.Args[0], "-key=offline-fixture-key", "-address=fixture", os.Getenv("GO_GEOCODING_INVALID_FLAG")}
-		main()
-		return
-	}
-	for _, arg := range []string{
-		"-components=country", "-components=country:", "-components=country:US:CA", "-components=unknown:value",
-		"-bounds=1,2", "-bounds=1,2|3,4|5,6", "-bounds=1|3,4", "-bounds=1,2|3,", "-bounds=1,2|bad,4",
-		"-latlng=1", "-latlng=1,2,3", "-latlng=,2", "-latlng=1,bad",
+		{"components", []string{"country", "country:", ":US", ":", "country:US:CA", "country:US|", "|country:US", "country:US||route:Main", "unknown:value", "country:US|locality"}},
+		{"bounds", []string{"1,2", "1,2|3,4|5,6", "|3,4", "1,2|", "|", "1|3,4", "1,2|3", "1,2,3|4,5", "1,2|3,4,5", ",2|3,4", "1,|3,4", "1,2|,4", "1,2|3,", "bad,2|3,4", "1,bad|3,4", "1,2|bad,4", "1,2|3,bad"}},
+		{"latlng", []string{"1", "1,2,3", ",2", "1,", ",", "bad,2", "1,bad", "1|2"}},
 	} {
-		t.Run(arg, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run=^TestGeocodingInvalidCLI$")
-			cmd.Env = append(os.Environ(), "GO_GEOCODING_PARSING_HELPER=1", "GO_GEOCODING_INVALID_FLAG="+arg)
-			output, err := cmd.CombinedOutput()
-			exit, ok := err.(*exec.ExitError)
-			if !ok || exit.ExitCode() != 1 {
-				t.Fatalf("invalid CLI exit = %v, want status 1; output: %s", err, output)
-			}
-			text := string(output)
-			if !strings.Contains(text, "fatal error:") || !strings.Contains(strings.ToLower(text), strings.SplitN(arg[1:], "=", 2)[0]) {
-				t.Errorf("missing useful flag error: %s", text)
-			}
-			if strings.Contains(text, "panic:") || strings.Contains(text, "unexpected-geocoding-dispatch") {
-				t.Errorf("malformed input panicked or reached the service: %s", text)
-			}
-		})
+		for _, input := range tt.inputs {
+			t.Run(tt.name+"="+input, func(t *testing.T) {
+				var stdout bytes.Buffer
+				code, err, _ := invokeGeocoding(t, server, []string{"-key=fixture", "-address=Example", "-" + tt.name + "=" + input}, &stdout)
+				if code != 2 || err == nil || !strings.Contains(strings.ToLower(err.Error()), tt.name) || stdout.Len() != 0 {
+					t.Fatalf("run = (%d, %v), stdout %q", code, err, stdout.String())
+				}
+			})
+		}
+	}
+	if len(queries) != 0 {
+		t.Fatalf("invalid inputs made %d requests", len(queries))
+	}
+}
+
+func TestGeocodingOptionsAndRunIsolation(t *testing.T) {
+	server, queries := geocodingServer(t, geocodingFixture)
+	var stdout bytes.Buffer
+	code, err, stderr := invokeGeocoding(t, server, []string{
+		"-key=fixture", "-components=route:Main Street|locality:Example City|administrative_area:Example State|postal_code:00123|country:US|country:CA",
+		"-bounds=-12.5,-45.25|23.75,67.125", "-latlng=-12.5,67.125", "-language=fr", "-region=ca",
+		"-result_type=street_address|postal_code", "-location_type=ROOFTOP|RANGE_INTERPOLATED|GEOMETRIC_CENTER|APPROXIMATE|ignored", "-enable_address_descriptor=True",
+	}, &stdout)
+	if code != 0 || err != nil || stderr != "" {
+		t.Fatalf("run = (%d, %v), stderr %q", code, err, stderr)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("requests = %d, want 1", len(queries))
+	}
+	q := <-queries
+	components := strings.Split(q.Get("components"), "|")
+	sort.Strings(components)
+	want := []string{"administrative_area:Example State", "country:CA", "locality:Example City", "postal_code:00123", "route:Main Street"}
+	if !reflect.DeepEqual(components, want) {
+		t.Errorf("components = %v, want %v (last duplicate wins)", components, want)
+	}
+	for key, want := range map[string]string{
+		"bounds": "-12.5,-45.25|23.75,67.125", "latlng": "-12.5,67.125", "language": "fr", "region": "ca",
+		"result_type": "street_address|postal_code", "location_type": "ROOFTOP|RANGE_INTERPOLATED|GEOMETRIC_CENTER|APPROXIMATE", "enable_address_descriptor": "true",
+	} {
+		if q.Get(key) != want {
+			t.Errorf("%s = %q, want %q", key, q.Get(key), want)
+		}
+	}
+	stdout.Reset()
+	code, err, _ = invokeGeocoding(t, server, []string{"-key=second", "-address=Second address", "-components=", "-bounds=", "-latlng=", "-enable_address_descriptor=False"}, &stdout)
+	if code != 0 || err != nil || len(queries) != 1 {
+		t.Fatalf("second run = (%d, %v), requests %d", code, err, len(queries))
+	}
+	q = <-queries
+	if q.Get("address") != "Second address" || q.Get("key") != "second" {
+		t.Errorf("second request = %v", q)
+	}
+	for _, key := range []string{"components", "bounds", "latlng", "language", "region", "result_type", "location_type", "enable_address_descriptor"} {
+		if _, exists := q[key]; exists {
+			t.Errorf("second run retained %s: %v", key, q)
+		}
+	}
+}
+
+func TestGeocodingHelpAndUsage(t *testing.T) {
+	server, queries := geocodingServer(t, geocodingFixture)
+	for _, tt := range []struct {
+		args []string
+		code int
+	}{
+		{[]string{"-help"}, 0},
+		{[]string{"-unknown"}, 2},
+		{[]string{"-key=fixture", "-address=Example", "extra"}, 2},
+		{[]string{"-address=Example"}, 2},
+		{[]string{"-client_id=legacy", "-address=Example"}, 2},
+		{[]string{"-signature=c2VjcmV0", "-address=Example"}, 2},
+		{[]string{"-client_id=legacy", "-signature=!", "-address=Example"}, 2},
+		{[]string{"-key=fixture"}, 2},
+	} {
+		var stdout bytes.Buffer
+		code, err, _ := invokeGeocoding(t, server, tt.args, &stdout)
+		if code != tt.code || (tt.code == 0 && err != nil) || stdout.Len() != 0 {
+			t.Errorf("run(%v) = (%d, %v), stdout %q", tt.args, code, err, stdout.String())
+		}
+	}
+	if len(queries) != 0 {
+		t.Errorf("help/usage made %d requests", len(queries))
+	}
+}
+
+func TestGeocodingCredentialSelection(t *testing.T) {
+	server, queries := geocodingServer(t, geocodingFixture)
+	for _, args := range [][]string{
+		{"-key=preferred", "-client_id=legacy", "-signature=!", "-address=Example"},
+		{"-client_id=legacy", "-signature=c2VjcmV0", "-address=Example"},
+	} {
+		var stdout bytes.Buffer
+		code, err, _ := invokeGeocoding(t, server, args, &stdout)
+		if code != 0 || err != nil {
+			t.Fatalf("credential run = (%d, %v)", code, err)
+		}
+	}
+	if len(queries) != 2 {
+		t.Fatalf("requests = %d, want 2", len(queries))
+	}
+	if q := <-queries; q.Get("key") != "preferred" || q.Get("client") != "" {
+		t.Errorf("key precedence lost: %v", q)
+	}
+	if q := <-queries; q.Get("client") != "legacy" || q.Get("key") != "" {
+		t.Errorf("legacy credentials lost: %v", q)
 	}
 }

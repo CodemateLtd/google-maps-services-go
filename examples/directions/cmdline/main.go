@@ -20,7 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -29,193 +29,166 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey                   = flag.String("key", "", "API key for Google Maps API access (recommended).")
-	clientID                 = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
-	signature                = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
-	origin                   = flag.String("origin", "", "The address or textual latitude/longitude value from which you wish to calculate directions.")
-	destination              = flag.String("destination", "", "The address or textual latitude/longitude value from which you wish to calculate directions.")
-	mode                     = flag.String("mode", "", "The travel mode for this directions request.")
-	departureTime            = flag.String("departure_time", "", "The depature time for transit mode directions request.")
-	arrivalTime              = flag.String("arrival_time", "", "The arrival time for transit mode directions request.")
-	waypoints                = flag.String("waypoints", "", "The waypoints for driving directions request, | separated.")
-	alternatives             = flag.Bool("alternatives", false, "Whether the Directions service may provide more than one route alternative in the response.")
-	avoid                    = flag.String("avoid", "", "Indicates that the calculated route(s) should avoid the indicated features, | separated.")
-	language                 = flag.String("language", "", "Specifies the language in which to return results.")
-	units                    = flag.String("units", "", "Specifies the unit system to use when returning results.")
-	region                   = flag.String("region", "", "Specifies the region code, specified as a ccTLD (\"top-level domain\") two-character value.")
-	transitMode              = flag.String("transit_mode", "", "Specifies one or more preferred modes of transit, | separated. This parameter may only be specified for transit directions.")
-	transitRoutingPreference = flag.String("transit_routing_preference", "", "Specifies preferences for transit routes.")
-	iterations               = flag.Int("iterations", 1, "Number of API requests. Values above 1 run concurrently and report each failure.")
-	trafficModel             = flag.String("traffic_model", "", "Specifies traffic prediction model when request future directions. Valid values are optimistic, best_guess, and pessimistic. Optional.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
-
-	var client *maps.Client
-	var err error
-	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey), maps.WithRateLimit(2))
-	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
-	} else {
-		usageAndExit("Please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret.")
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	// Batch failures are already reported on stdout and retain the batch's
+	// successful exit status. Other errors are diagnosed only here.
+	if err != nil && code != 0 {
+		fmt.Fprintln(os.Stderr, err)
 	}
-	check(err)
+	os.Exit(code)
+}
 
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("directions", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID := flags.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature := flags.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
+	origin := flags.String("origin", "", "The address or textual latitude/longitude value from which you wish to calculate directions.")
+	destination := flags.String("destination", "", "The address or textual latitude/longitude value to which you wish to calculate directions.")
+	mode := flags.String("mode", "", "The travel mode for this directions request.")
+	departureTime := flags.String("departure_time", "", "The departure time for this directions request.")
+	arrivalTime := flags.String("arrival_time", "", "The arrival time for this directions request.")
+	waypoints := flags.String("waypoints", "", "The waypoints for driving directions request, | separated.")
+	alternatives := flags.Bool("alternatives", false, "Whether to provide more than one route alternative.")
+	avoid := flags.String("avoid", "", "Features to avoid, | separated.")
+	language := flags.String("language", "", "The language in which to return results.")
+	units := flags.String("units", "", "The unit system to use when returning results.")
+	region := flags.String("region", "", "The region code as a two-character ccTLD.")
+	transitMode := flags.String("transit_mode", "", "Preferred modes of transit, | separated.")
+	transitRoutingPreference := flags.String("transit_routing_preference", "", "Preferences for transit routes.")
+	iterations := flags.Int("iterations", 1, "Number of API requests. Values above 1 run concurrently and report each failure.")
+	trafficModel := flags.String("traffic_model", "", "Traffic prediction model: optimistic, best_guess, or pessimistic.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *origin == "" || *destination == "" {
+		return 2, fmt.Errorf("origin and destination are required")
+	}
+	if *iterations < 1 {
+		return 2, fmt.Errorf("iterations must be positive")
+	}
 	r := &maps.DirectionsRequest{
-		Origin:        *origin,
-		Destination:   *destination,
-		DepartureTime: *departureTime,
-		ArrivalTime:   *arrivalTime,
-		Alternatives:  *alternatives,
-		Language:      *language,
-		Region:        *region,
+		Origin: *origin, Destination: *destination,
+		DepartureTime: *departureTime, ArrivalTime: *arrivalTime,
+		Alternatives: *alternatives, Language: *language, Region: *region,
 	}
-
-	lookupMode(*mode, r)
-	lookupUnits(*units, r)
-	lookupTransitRoutingPreference(*transitRoutingPreference, r)
-	lookupTrafficModel(*trafficModel, r)
-
+	switch *mode {
+	case "", "driving", "walking", "bicycling", "transit":
+		r.Mode = maps.Mode(*mode)
+	default:
+		return 2, fmt.Errorf("unknown mode %q", *mode)
+	}
+	switch *units {
+	case "", "metric", "imperial":
+		r.Units = maps.Units(*units)
+	default:
+		return 2, fmt.Errorf("unknown units %q", *units)
+	}
+	switch *transitRoutingPreference {
+	case "", "fewer_transfers", "less_walking":
+		r.TransitRoutingPreference = maps.TransitRoutingPreference(*transitRoutingPreference)
+	default:
+		return 2, fmt.Errorf("unknown transit routing preference %q", *transitRoutingPreference)
+	}
+	switch *trafficModel {
+	case "", "optimistic", "best_guess", "pessimistic":
+		r.TrafficModel = maps.TrafficModel(*trafficModel)
+	default:
+		return 2, fmt.Errorf("unknown traffic model %q", *trafficModel)
+	}
 	if *waypoints != "" {
 		r.Waypoints = strings.Split(*waypoints, "|")
 	}
-
 	if *avoid != "" {
-		for _, a := range strings.Split(*avoid, "|") {
-			switch a {
-			case "tolls":
-				r.Avoid = append(r.Avoid, maps.AvoidTolls)
-			case "highways":
-				r.Avoid = append(r.Avoid, maps.AvoidHighways)
-			case "ferries":
-				r.Avoid = append(r.Avoid, maps.AvoidFerries)
+		for _, value := range strings.Split(*avoid, "|") {
+			switch value {
+			case "tolls", "highways", "ferries":
+				r.Avoid = append(r.Avoid, maps.Avoid(value))
 			default:
-				log.Fatalf("Unknown avoid restriction %s", a)
+				return 2, fmt.Errorf("unknown avoid restriction %q", value)
 			}
 		}
 	}
 	if *transitMode != "" {
-		for _, t := range strings.Split(*transitMode, "|") {
-			switch t {
-			case "bus":
-				r.TransitMode = append(r.TransitMode, maps.TransitModeBus)
-			case "subway":
-				r.TransitMode = append(r.TransitMode, maps.TransitModeSubway)
-			case "train":
-				r.TransitMode = append(r.TransitMode, maps.TransitModeTrain)
-			case "tram":
-				r.TransitMode = append(r.TransitMode, maps.TransitModeTram)
-			case "rail":
-				r.TransitMode = append(r.TransitMode, maps.TransitModeRail)
+		for _, value := range strings.Split(*transitMode, "|") {
+			switch value {
+			case "bus", "subway", "train", "tram", "rail":
+				r.TransitMode = append(r.TransitMode, maps.TransitMode(value))
+			default:
+				return 2, fmt.Errorf("unknown transit mode %q", value)
 			}
 		}
 	}
-
-	if *iterations == 1 {
-		routes, waypoints, err := client.Directions(context.Background(), r)
-		check(err)
-
-		pretty.Println(waypoints)
-		pretty.Println(routes)
+	if r.DepartureTime != "" && r.ArrivalTime != "" {
+		return 2, fmt.Errorf("departure_time and arrival_time cannot both be specified")
+	}
+	if (len(r.TransitMode) != 0 || r.TransitRoutingPreference != "") && r.Mode != maps.TravelModeTransit {
+		return 2, fmt.Errorf("transit options require transit mode")
+	}
+	var options []maps.ClientOption
+	if *apiKey != "" {
+		options = append(options, maps.WithAPIKey(*apiKey), maps.WithRateLimit(2))
+	} else if *clientID != "" || *signature != "" {
+		options = append(options, maps.WithClientIDAndSignature(*clientID, *signature))
 	} else {
-		done := make(chan iterationResult)
-		for i := 0; i < *iterations; i++ {
-			go func(i int) {
-				startTime := time.Now()
-				_, _, err := client.Directions(context.Background(), r)
-				done <- iterationResult{
-					fmt.Sprintf("Iteration %2d: round trip %.2f seconds", i, float64(time.Now().Sub(startTime))/1000000000),
-					err,
-				}
-			}(i)
+		return 2, fmt.Errorf("please specify an API key, or an eligible existing customer's legacy client ID and URL signing secret")
+	}
+	client, err := maps.NewClient(append(options, clientOptions...)...)
+	if err != nil {
+		return 2, err
+	}
+	if *iterations == 1 {
+		routes, waypoints, err := client.Directions(ctx, r)
+		if err != nil {
+			return 1, err
 		}
-
-		for i := 0; i < *iterations; i++ {
-			result := <-done
-			if result.err != nil {
-				fmt.Printf("error: %+v\n", result.err)
-			} else {
-				fmt.Println(result.result)
+		if _, err := pretty.Fprintf(stdout, "%# v\n%# v\n", waypoints, routes); err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
+	done := make(chan iterationResult)
+	for i := 0; i < *iterations; i++ {
+		go func(i int) {
+			start := time.Now()
+			_, _, err := client.Directions(ctx, r)
+			done <- iterationResult{
+				result: fmt.Sprintf("Iteration %2d: round trip %.2f seconds", i, time.Since(start).Seconds()),
+				err:    err,
 			}
+		}(i)
+	}
+	var serviceErr, outputErr error
+	for i := 0; i < *iterations; i++ {
+		result := <-done
+		var err error
+		if result.err != nil {
+			if serviceErr == nil {
+				serviceErr = result.err
+			}
+			_, err = fmt.Fprintf(stdout, "error: %+v\n", result.err)
+		} else {
+			_, err = fmt.Fprintln(stdout, result.result)
+		}
+		if err != nil && outputErr == nil {
+			outputErr = err
 		}
 	}
+	if outputErr != nil {
+		return 1, outputErr
+	}
+	return 0, serviceErr
 }
 
 type iterationResult struct {
 	result string
 	err    error
-}
-
-func lookupMode(mode string, r *maps.DirectionsRequest) {
-	switch mode {
-	case "driving":
-		r.Mode = maps.TravelModeDriving
-	case "walking":
-		r.Mode = maps.TravelModeWalking
-	case "bicycling":
-		r.Mode = maps.TravelModeBicycling
-	case "transit":
-		r.Mode = maps.TravelModeTransit
-	case "":
-		// ignore
-	default:
-		log.Fatalf("Unknown mode '%s'", mode)
-	}
-}
-
-func lookupUnits(units string, r *maps.DirectionsRequest) {
-	switch units {
-	case "metric":
-		r.Units = maps.UnitsMetric
-	case "imperial":
-		r.Units = maps.UnitsImperial
-	case "":
-		// ignore
-	default:
-		log.Fatalf("Unknown units '%s'", units)
-	}
-}
-
-func lookupTransitRoutingPreference(transitRoutingPreference string, r *maps.DirectionsRequest) {
-	switch transitRoutingPreference {
-	case "fewer_transfers":
-		r.TransitRoutingPreference = maps.TransitRoutingPreferenceFewerTransfers
-	case "less_walking":
-		r.TransitRoutingPreference = maps.TransitRoutingPreferenceLessWalking
-	case "":
-		// ignore
-	default:
-		log.Fatalf("Unknown transit routing preference %s", transitRoutingPreference)
-	}
-}
-
-func lookupTrafficModel(trafficModel string, r *maps.DirectionsRequest) {
-	switch trafficModel {
-	case "optimistic":
-		r.TrafficModel = maps.TrafficModelOptimistic
-	case "best_guess":
-		r.TrafficModel = maps.TrafficModelBestGuess
-	case "pessimistic":
-		r.TrafficModel = maps.TrafficModelPessimistic
-	case "":
-		// ignore
-	default:
-		log.Fatalf("Unknown traffic mode %s", trafficModel)
-	}
 }
