@@ -15,80 +15,73 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"os/exec"
+	"regexp"
 	"strings"
-	"sync/atomic"
 	"testing"
+	"time"
+
+	"googlemaps.github.io/maps"
 )
 
-type dispatchTransport func(*http.Request) (*http.Response, error)
+const geocodingFixture = `{
+	"status":"OK",
+	"results":[{"formatted_address":"fixture-formatted-address","place_id":"fixture-result-place","geometry":{"location":{"lat":12.5,"lng":-34.25},"location_type":"ROOFTOP"}}],
+	"address_descriptor":{
+		"landmarks":[{"place_id":"fixture-landmark-place","display_name":{"text":"fixture-landmark-name","language_code":"en"}}],
+		"areas":[{"place_id":"fixture-area-place","display_name":{"text":"fixture-area-name","language_code":"en"},"containment":"WITHIN"}]
+	}
+}`
 
-func (f dispatchTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+func geocodingServer(t *testing.T, body string) (*httptest.Server, chan url.Values) {
+	t.Helper()
+	queries := make(chan url.Values, 100)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/maps/api/geocode/json" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+		queries <- r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server, queries
+}
+
+type geocodingLocalTransport func(*http.Request) (*http.Response, error)
+
+func (f geocodingLocalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
-func TestGeocodingDispatch(t *testing.T) {
-	if os.Getenv("GO_GEOCODING_DISPATCH_HELPER") == "1" {
-		var args []string
-		if err := json.Unmarshal([]byte(os.Getenv("GO_GEOCODING_DISPATCH_ARGS")), &args); err != nil {
-			t.Fatal(err)
-		}
-		wantQuery, err := url.ParseQuery(os.Getenv("GO_GEOCODING_DISPATCH_QUERY"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var calls int32
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			atomic.AddInt32(&calls, 1)
-			w.Header().Set("Content-Type", "application/json")
-			if r.Method != http.MethodGet || r.URL.Path != "/maps/api/geocode/json" {
-				fmt.Fprint(w, `{"status":"REQUEST_DENIED","error_message":"fixture-request-mismatch"}`)
-				return
-			}
-			for _, key := range []string{"key", "address", "components", "latlng", "enable_address_descriptor"} {
-				if r.URL.Query().Get(key) != wantQuery.Get(key) {
-					fmt.Fprint(w, `{"status":"REQUEST_DENIED","error_message":"fixture-request-mismatch"}`)
-					return
-				}
-			}
-			if os.Getenv("GO_GEOCODING_DISPATCH_DENIED") == "1" {
-				fmt.Fprint(w, `{"status":"REQUEST_DENIED","error_message":"fixture-geocoding-denied"}`)
-				return
-			}
-			fmt.Fprint(w, `{
-				"status":"OK",
-				"results":[{"formatted_address":"fixture-formatted-address","place_id":"fixture-result-place"}],
-				"address_descriptor":{
-					"landmarks":[{"place_id":"fixture-landmark-place","display_name":{"text":"fixture-landmark-name","language_code":"en"}}],
-					"areas":[{"place_id":"fixture-area-place","display_name":{"text":"fixture-area-name","language_code":"en"},"containment":"WITHIN"}]
-				}
-			}`)
-		}))
-		defer server.Close()
-		base := http.DefaultTransport
-		http.DefaultTransport = dispatchTransport(func(r *http.Request) (*http.Response, error) {
-			if r.URL.Scheme != "https" || r.URL.Host != "maps.googleapis.com" {
-				return nil, fmt.Errorf("unexpected request destination: %s", r.URL)
-			}
-			r.URL.Scheme = "http"
-			r.URL.Host = strings.TrimPrefix(server.URL, "http://")
-			return base.RoundTrip(r)
-		})
-		defer func() { http.DefaultTransport = base }()
-		os.Args = append([]string{os.Args[0]}, args...)
-		main()
-		if got := atomic.LoadInt32(&calls); got != 1 {
-			t.Errorf("service requests = %d, want 1", got)
-		}
-		return
+func invokeGeocoding(t *testing.T, server *httptest.Server, args []string, stdout io.Writer) (int, error, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stderr bytes.Buffer
+	client := *server.Client()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
 	}
+	client.Transport = geocodingLocalTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme+"://"+r.URL.Host != server.URL {
+			return nil, fmt.Errorf("offline fixture blocked destination %s", r.URL)
+		}
+		return base.RoundTrip(r)
+	})
+	code, err := run(ctx, args, stdout, &stderr, maps.WithBaseURL(server.URL), maps.WithHTTPClient(&client))
+	return code, err, stderr.String()
+}
 
+func TestGeocodingDispatch(t *testing.T) {
 	tests := []struct {
 		name       string
 		address    string
@@ -100,6 +93,8 @@ func TestGeocodingDispatch(t *testing.T) {
 		{name: "address-only", address: "Example Street"},
 		{name: "component-only", components: "country:US"},
 		{name: "coordinate-only", latlng: "12.5,-34.25", reverse: true},
+		{name: "zero-coordinates", latlng: "0,0", reverse: true},
+		{name: "numeric-coordinates-without-range-policy", latlng: "91,181", reverse: true},
 		{name: "address-and-coordinates-retain-forward", address: "Example Street", latlng: "12.5,-34.25"},
 		{name: "components-and-coordinates-retain-forward", components: "country:US", latlng: "12.5,-34.25"},
 		{name: "forward-service-error", address: "Example Street", denied: true},
@@ -107,53 +102,81 @@ func TestGeocodingDispatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			body := geocodingFixture
+			if tt.denied {
+				body = `{"status":"REQUEST_DENIED","error_message":"fixture-geocoding-denied"}`
+			}
+			server, queries := geocodingServer(t, body)
 			args := []string{"-key=offline-fixture-key", "-enable_address_descriptor=True"}
-			query := url.Values{"key": {"offline-fixture-key"}, "enable_address_descriptor": {"true"}}
-			for _, input := range []struct{ key, value string }{
-				{"address", tt.address}, {"components", tt.components}, {"latlng", tt.latlng},
-			} {
+			for _, input := range []struct{ key, value string }{{"address", tt.address}, {"components", tt.components}, {"latlng", tt.latlng}} {
 				if input.value != "" {
 					args = append(args, "-"+input.key+"="+input.value)
-					query.Set(input.key, input.value)
 				}
 			}
-			encodedArgs, err := json.Marshal(args)
-			if err != nil {
-				t.Fatal(err)
+			var stdout bytes.Buffer
+			code, err, stderr := invokeGeocoding(t, server, args, &stdout)
+			if len(queries) != 1 {
+				t.Fatalf("requests = %d, want 1", len(queries))
 			}
-			cmd := exec.Command(os.Args[0], "-test.run=^TestGeocodingDispatch$")
-			cmd.Env = append(os.Environ(),
-				"GO_GEOCODING_DISPATCH_HELPER=1",
-				"GO_GEOCODING_DISPATCH_ARGS="+string(encodedArgs),
-				"GO_GEOCODING_DISPATCH_QUERY="+query.Encode(),
-			)
-			if tt.denied {
-				cmd.Env = append(cmd.Env, "GO_GEOCODING_DISPATCH_DENIED=1")
-			}
-			output, err := cmd.CombinedOutput()
-			text := string(output)
-			if tt.denied {
-				exit, ok := err.(*exec.ExitError)
-				if !ok || exit.ExitCode() != 1 || !strings.Contains(text, "fixture-geocoding-denied") {
-					t.Fatalf("service error exit = %v, want status 1 and decoded API error; output: %s", err, text)
+			q := <-queries
+			for key, want := range map[string]string{"key": "offline-fixture-key", "address": tt.address, "components": tt.components, "latlng": tt.latlng, "enable_address_descriptor": "true"} {
+				if q.Get(key) != want {
+					t.Errorf("%s = %q, want %q", key, q.Get(key), want)
 				}
-				if strings.Contains(text, "fixture-formatted-address") || strings.Contains(text, "panic:") {
-					t.Errorf("service failure printed success or panicked: %s", text)
+			}
+			if tt.denied {
+				if code != 1 || err == nil || !strings.Contains(err.Error(), "fixture-geocoding-denied") || stdout.Len() != 0 {
+					t.Fatalf("service error = (%d, %v), stdout %q", code, err, stdout.String())
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("CLI failed: %v; output: %s", err, text)
+			if code != 0 || err != nil || stderr != "" {
+				t.Fatalf("run = (%d, %v), stderr %q", code, err, stderr)
 			}
-			for _, value := range []string{"fixture-formatted-address", "fixture-result-place"} {
+			text := stdout.String()
+			for _, value := range []string{"fixture-formatted-address", "fixture-result-place", "ROOFTOP"} {
 				if !strings.Contains(text, value) {
-					t.Errorf("missing decoded geocoding result %q: %s", value, text)
+					t.Errorf("missing decoded value %q: %s", value, text)
+				}
+			}
+			for _, pattern := range []string{`Lat:\s*12\.5`, `Lng:\s*-34\.25`} {
+				if !regexp.MustCompile(pattern).MatchString(text) {
+					t.Errorf("missing decoded coordinate %s: %s", pattern, text)
 				}
 			}
 			for _, value := range []string{"fixture-landmark-place", "fixture-landmark-name", "fixture-area-place", "fixture-area-name"} {
 				if got := strings.Contains(text, value); got != tt.reverse {
-					t.Errorf("top-level descriptor %q present = %t, want %t: %s", value, got, tt.reverse, text)
+					t.Errorf("descriptor %q present = %t, want %t", value, got, tt.reverse)
 				}
+			}
+		})
+	}
+}
+
+type geocodingBrokenWriter struct{}
+
+func (geocodingBrokenWriter) Write([]byte) (int, error) {
+	return 0, errors.New("fixture-output-failed")
+}
+
+func TestGeocodingResponseFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name, body, want string
+		broken           bool
+	}{
+		{"decode", `{"status":"OK","results":[`, "unexpected", false},
+		{"output", geocodingFixture, "fixture-output-failed", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, queries := geocodingServer(t, tt.body)
+			var buffer bytes.Buffer
+			var stdout io.Writer = &buffer
+			if tt.broken {
+				stdout = geocodingBrokenWriter{}
+			}
+			code, err, _ := invokeGeocoding(t, server, []string{"-key=fixture", "-address=Example Street"}, stdout)
+			if code != 1 || err == nil || !strings.Contains(err.Error(), tt.want) || len(queries) != 1 || buffer.Len() != 0 {
+				t.Fatalf("run = (%d, %v), requests %d, stdout %q", code, err, len(queries), buffer.String())
 			}
 		})
 	}

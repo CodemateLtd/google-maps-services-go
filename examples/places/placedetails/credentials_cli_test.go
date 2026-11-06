@@ -15,48 +15,61 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"os/exec"
-	"sync"
 	"testing"
 	"time"
+
+	"googlemaps.github.io/maps"
 )
 
-type credentialsCLITransport func(*http.Request) (*http.Response, error)
-
-func (f credentialsCLITransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
+type offlineTransport struct {
+	host string
+	base http.RoundTripper
 }
 
-// Run the real CLI in a subprocess because flag parsing and usage errors exit.
-func TestCredentialsCLIProcess(t *testing.T) {
-	fixtureURL := os.Getenv("GO_PLACES_CREDENTIALS_FIXTURE")
-	if fixtureURL == "" {
-		return
+func (tr offlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Host != tr.host {
+		return nil, fmt.Errorf("non-fixture HTTP request: %s", r.URL)
 	}
-	target, err := url.Parse(fixtureURL)
+	return tr.base.RoundTrip(r)
+}
+
+func fixture(t *testing.T, status int, contentType string, body []byte) ([]maps.ClientOption, chan url.Values) {
+	t.Helper()
+	requests := make(chan url.Values, 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Query()
+		if r.Method != http.MethodGet || r.URL.Path != "/maps/api/place/details/json" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var args []string
-	if err := json.Unmarshal([]byte(os.Getenv("GO_PLACES_CREDENTIALS_ARGS")), &args); err != nil {
-		t.Fatal(err)
-	}
-	base := http.DefaultTransport
-	// Route every attempted HTTP request locally, including unexpected requests.
-	http.DefaultTransport = credentialsCLITransport(func(r *http.Request) (*http.Response, error) {
-		r.URL.Scheme = target.Scheme
-		r.URL.Host = target.Host
-		return base.RoundTrip(r)
-	})
-	defer func() { http.DefaultTransport = base }()
-	os.Args = append([]string{os.Args[0]}, args...)
-	main()
+	client := server.Client()
+	client.Transport = offlineTransport{host: target.Host, base: client.Transport}
+	client.Timeout = 5 * time.Second
+	return []maps.ClientOption{maps.WithBaseURL(server.URL), maps.WithHTTPClient(client)}, requests
+}
+
+func invoke(t *testing.T, args []string, stdout, stderr io.Writer, options []maps.ClientOption) (int, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return run(ctx, args, stdout, stderr, options...)
 }
 
 func TestCredentialsCLI(t *testing.T) {
@@ -76,65 +89,32 @@ func TestCredentialsCLI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var mu sync.Mutex
-			var requests []url.Values
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				query := r.URL.Query()
-				mu.Lock()
-				requests = append(requests, query)
-				mu.Unlock()
-				if r.Method != http.MethodGet || r.URL.Path != "/maps/api/place/details/json" {
-					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
-					http.Error(w, "unexpected request", http.StatusBadRequest)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				if err := json.NewEncoder(w).Encode(map[string]interface{}{"status": "OK"}); err != nil {
-					t.Errorf("writing Places fixture: %v", err)
-				}
-			}))
-			defer server.Close()
+			options, requests := fixture(t, http.StatusOK, "application/json", []byte(`{"status":"OK"}`))
 			args := append(append([]string(nil), operationArgs...), tt.args...)
-			encodedArgs, err := json.Marshal(args)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCredentialsCLIProcess$")
-			cmd.Env = append(os.Environ(),
-				"GO_PLACES_CREDENTIALS_FIXTURE="+server.URL,
-				"GO_PLACES_CREDENTIALS_ARGS="+string(encodedArgs),
-			)
-			output, err := cmd.CombinedOutput()
-			mu.Lock()
-			gotRequests := append([]url.Values(nil), requests...)
-			mu.Unlock()
-			if ctx.Err() != nil {
-				t.Fatalf("CLI timed out: %v; output: %s", ctx.Err(), output)
-			}
+			var stdout, stderr bytes.Buffer
+			code, err := invoke(t, args, &stdout, &stderr, options)
 			if !tt.valid {
-				if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 {
-					t.Errorf("invalid credentials exit = %v, want usage exit 2; output: %s", err, output)
+				if code != 2 {
+					t.Errorf("invalid credentials code = %d, error = %v", code, err)
 				}
-				if len(gotRequests) != 0 {
-					t.Errorf("invalid credentials reached HTTP: %#v", gotRequests)
+				if len(requests) != 0 {
+					t.Errorf("invalid credentials made %d HTTP calls", len(requests))
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("API-key CLI failed: %v; output: %s", err, output)
+			if code != 0 || err != nil {
+				t.Fatalf("run = (%d, %v)", code, err)
 			}
-			if len(gotRequests) != 1 {
-				t.Fatalf("HTTP requests = %d, want 1", len(gotRequests))
+			if len(requests) != 1 {
+				t.Fatalf("HTTP requests = %d, want 1", len(requests))
 			}
-			query := gotRequests[0]
+			query := <-requests
 			if keys := query["key"]; len(keys) != 1 || keys[0] != "offline-fixture-key" {
-				t.Errorf("SDK API-key query = %#v, want [offline-fixture-key]", keys)
+				t.Errorf("API-key query = %#v", keys)
 			}
 			for _, retired := range []string{"client", "signature"} {
 				if values, present := query[retired]; present {
-					t.Errorf("API-key request sent %s = %#v", retired, values)
+					t.Errorf("request sent %s = %#v", retired, values)
 				}
 			}
 		})

@@ -20,73 +20,80 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kr/pretty"
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey    = flag.String("key", "", "API key for Google Maps API access (recommended).")
-	clientID  = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
-	signature = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
-	location  = flag.String("location", "", "a comma-separated lat,lng tuple (eg. location=-33.86,151.20), representing the location to look up.")
-	timestamp = flag.String("timestamp", "", "specifies the desired time as seconds since midnight, January 1, 1970 UTC.")
-	language  = flag.String("language", "", "The language in which to return results.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
-
-	var client *maps.Client
-	var err error
-	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
-	} else {
-		usageAndExit("Please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret.")
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
-	check(err)
-
-	t, err := strconv.Atoi(*timestamp)
-	check(err)
-
-	r := &maps.TimezoneRequest{
-		Language:  *language,
-		Timestamp: time.Unix(int64(t), 0),
-	}
-
-	parseLocation(*location, r)
-
-	resp, err := client.Timezone(context.Background(), r)
-	check(err)
-
-	pretty.Println(resp)
+	os.Exit(code)
 }
 
-func parseLocation(location string, r *maps.TimezoneRequest) {
-	if location != "" {
-		l, err := maps.ParseLatLng(location)
-		check(err)
-		r.Location = &l
-	} else {
-		usageAndExit("location is required")
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("timezone", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID := flags.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature := flags.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
+	location := flags.String("location", "", "Location as latitude,longitude.")
+	timestamp := flags.String("timestamp", "", "Desired time as seconds since midnight, January 1, 1970 UTC.")
+	language := flags.String("language", "", "The language in which to return results.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
 	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
+	if *apiKey != "" {
+		options = append(options, maps.WithAPIKey(*apiKey))
+	} else if *clientID != "" || *signature != "" {
+		options = append(options, maps.WithClientIDAndSignature(*clientID, *signature))
+	} else {
+		return 2, fmt.Errorf("please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret")
+	}
+	client, err := maps.NewClient(append(options, clientOptions...)...)
+	if err != nil {
+		return 2, err
+	}
+	seconds, err := strconv.ParseInt(*timestamp, 10, 64)
+	if err != nil {
+		return 2, fmt.Errorf("timestamp: %w", err)
+	}
+	r := &maps.TimezoneRequest{Language: *language, Timestamp: time.Unix(seconds, 0)}
+	if err := parseLocation(*location, r); err != nil {
+		return 2, err
+	}
+	resp, err := client.Timezone(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}
+
+func parseLocation(location string, r *maps.TimezoneRequest) error {
+	if strings.Count(location, ",") != 1 {
+		return fmt.Errorf("location: expected latitude,longitude, got %q", location)
+	}
+	point, err := maps.ParseLatLng(location)
+	if err != nil {
+		return fmt.Errorf("location: %w", err)
+	}
+	r.Location = &point
+	return nil
 }

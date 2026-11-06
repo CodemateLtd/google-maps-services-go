@@ -23,65 +23,69 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/kr/pretty"
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey   = flag.String("key", "", "API Key for using Google Maps API.")
-	input    = flag.String("input", "", "Text string on which to search.")
-	language = flag.String("language", "", "The language in which to return results.")
-	offset   = flag.Uint("offset", 0, "The character position in the input term at which the service uses text for predictions.")
-	location = flag.String("location", "", "The latitude/longitude around which to retrieve place information. This must be specified as latitude,longitude.")
-	radius   = flag.Uint("radius", 0, "Defines the distance (in meters) within which to bias place results. The maximum allowed radius is 50,000 meters.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
-
-	var client *maps.Client
-	var err error
-	if *apiKey == "" {
-		usageAndExit("Please specify an API Key.")
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
-	client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
-	check(err)
-
-	r := &maps.QueryAutocompleteRequest{
-		Input:    *input,
-		Language: *language,
-		Radius:   *radius,
-		Offset:   *offset,
-	}
-
-	parseLocation(*location, r)
-
-	resp, err := client.QueryAutocomplete(context.Background(), r)
-	check(err)
-
-	pretty.Println(resp)
+	os.Exit(code)
 }
 
-func parseLocation(location string, r *maps.QueryAutocompleteRequest) {
-	if location != "" {
-		l, err := maps.ParseLatLng(location)
-		check(err)
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("queryautocomplete", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API Key for using Google Maps API.")
+	input := flags.String("input", "", "Text string on which to search.")
+	language := flags.String("language", "", "The language in which to return results.")
+	offset := flags.Uint("offset", 0, "The character position in the input term at which the service uses text for predictions.")
+	location := flags.String("location", "", "The latitude/longitude around which to retrieve place information. This must be specified as latitude,longitude.")
+	radius := flags.Uint("radius", 0, "Defines the distance (in meters) within which to bias place results. The maximum allowed radius is 50,000 meters.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if *apiKey == "" {
+		return 2, fmt.Errorf("Please specify an API Key.")
+	}
+	if *input == "" {
+		return 2, fmt.Errorf("Please specify input.")
+	}
+	r := &maps.QueryAutocompleteRequest{
+		Input: *input, Language: *language, Radius: *radius, Offset: *offset,
+	}
+	if *location != "" {
+		if strings.Count(*location, ",") != 1 {
+			return 2, fmt.Errorf("invalid location %q: expected latitude,longitude", *location)
+		}
+		l, err := maps.ParseLatLng(*location)
+		if err != nil {
+			return 2, err
+		}
 		r.Location = &l
 	}
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
+	options = append(options, clientOptions...)
+	options = append(options, maps.WithAPIKey(*apiKey))
+	client, err := maps.NewClient(options...)
+	if err != nil {
+		return 1, err
+	}
+	resp, err := client.QueryAutocomplete(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }

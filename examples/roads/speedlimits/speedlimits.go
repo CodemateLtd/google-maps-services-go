@@ -12,15 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main contains a simple command line tool for Timezone API
-// Directions docs: https://developers.google.com/maps/documentation/timezone/
+// Package main contains a simple command line tool for the Roads Speed Limits API.
+// Docs: https://developers.google.com/maps/documentation/roads/speed-limits
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -28,76 +29,92 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey   = flag.String("key", "", "API Key for using Google Maps API.")
-	path     = flag.String("path", "", "The path to be snapped. The path parameter accepts a list of latitude/longitude pairs. Latitude and longitude values should be separated by commas. Coordinates should be separated by the pipe character.")
-	placeIDs = flag.String("place_ids", "", "The place ID of the road segment. Place IDs are returned by the snapToRoads method. You can pass up to 100 Place IDs with each request. Place IDs should be separated by a comma.")
-	units    = flag.String("units", "", "Whether to return speed limits in kilometers or miles per hour. This can be set to either KPH or MPH. Defaults to KPH.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
-	if *apiKey == "" {
-		usageAndExit("Please specify an API Key.")
-	}
-	client, err := maps.NewClient(maps.WithAPIKey(*apiKey))
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
 	if err != nil {
-		log.Fatalf("error %v", err)
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
+
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("speedlimits", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API Key for using Google Maps API.")
+	path := flags.String("path", "", "The path to be snapped. Separate latitude/longitude pairs with pipes and latitude and longitude with commas.")
+	placeIDs := flags.String("place_ids", "", "The place IDs of road segments, separated by commas.")
+	units := flags.String("units", "", "Speed units: KPH or MPH. Defaults to KPH.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
+	}
+	if *apiKey == "" {
+		return 2, fmt.Errorf("please specify an API key")
 	}
 	r := &maps.SpeedLimitsRequest{}
-
-	if *units == "KPH" {
+	switch *units {
+	case "":
+	case "KPH":
 		r.Units = maps.SpeedLimitKPH
-	}
-	if *units == "MPH" {
+	case "MPH":
 		r.Units = maps.SpeedLimitMPH
+	default:
+		return 2, fmt.Errorf("units must be KPH or MPH")
 	}
-
 	if *path == "" && *placeIDs == "" {
-		usageAndExit("Please specify either a path to be snapped, or a list of Place IDs.")
+		return 2, fmt.Errorf("please specify a path or a list of place IDs")
 	}
-	parsePath(*path, r)
-	parsePlaceIDs(*placeIDs, r)
-
-	resp, err := client.SpeedLimits(context.Background(), r)
+	if *path != "" {
+		points, err := parsePath(*path)
+		if err != nil {
+			return 2, err
+		}
+		r.Path = points
+	}
+	if *placeIDs != "" {
+		r.PlaceID = strings.Split(*placeIDs, ",")
+		for _, id := range r.PlaceID {
+			if strings.TrimSpace(id) == "" {
+				return 2, fmt.Errorf("place IDs must not be empty")
+			}
+		}
+	}
+	options := append([]maps.ClientOption{maps.WithAPIKey(*apiKey)}, clientOptions...)
+	client, err := maps.NewClient(options...)
 	if err != nil {
-		log.Fatalf("error %v", err)
+		return 1, err
 	}
-
-	pretty.Println(resp)
+	resp, err := client.SpeedLimits(ctx, r)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
-// parsePath takes a location argument string and decodes it.
-func parsePath(path string, r *maps.SpeedLimitsRequest) {
-	if path != "" {
-		ls := strings.Split(path, "|")
-		for _, l := range ls {
-			ll, err := maps.ParseLatLng(l)
-			check(err)
-			r.Path = append(r.Path, ll)
+// parsePath validates the shape before calling the SDK's coordinate parser.
+func parsePath(path string) ([]maps.LatLng, error) {
+	locations := strings.Split(path, "|")
+	points := make([]maps.LatLng, 0, len(locations))
+	for i, location := range locations {
+		if strings.Count(location, ",") != 1 {
+			return nil, fmt.Errorf("path point %d must contain latitude,longitude", i+1)
 		}
-	}
-}
-
-// parsePlacesIds takes a placesIds argument string and decodes it.
-func parsePlaceIDs(placeIDs string, r *maps.SpeedLimitsRequest) {
-	if placeIDs != "" {
-		ids := strings.Split(placeIDs, ",")
-		for _, id := range ids {
-			r.PlaceID = append(r.PlaceID, id)
+		point, err := maps.ParseLatLng(location)
+		if err != nil {
+			return nil, fmt.Errorf("path point %d: %w", i+1, err)
 		}
+		if math.IsNaN(point.Lat) || math.IsInf(point.Lat, 0) || math.IsNaN(point.Lng) || math.IsInf(point.Lng, 0) {
+			return nil, fmt.Errorf("path point %d must contain finite coordinates", i+1)
+		}
+		points = append(points, point)
 	}
+	return points, nil
 }

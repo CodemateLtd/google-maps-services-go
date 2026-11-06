@@ -20,7 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"strings"
 
@@ -28,70 +28,82 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var (
-	apiKey                  = flag.String("key", "", "API key for Google Maps API access (recommended).")
-	clientID                = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
-	signature               = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
-	address                 = flag.String("address", "", "The street address that you want to geocode, in the format used by the national postal service of the country concerned.")
-	components              = flag.String("components", "", "Component filters as name:value pairs separated by |, with non-empty names and values.")
-	bounds                  = flag.String("bounds", "", "The bounding box used to bias results, as southwest_lat,southwest_lng|northeast_lat,northeast_lng.")
-	language                = flag.String("language", "", "The language in which to return results.")
-	region                  = flag.String("region", "", "The region code, specified as a ccTLD two-character value.")
-	latlng                  = flag.String("latlng", "", "The textual latitude/longitude value for which you wish to obtain the closest, human-readable address. Uses ReverseGeocode only when neither address nor components is set; mixed inputs retain Geocode.")
-	resultType              = flag.String("result_type", "", "One or more address types, separated by a pipe (|).")
-	locationType            = flag.String("location_type", "", "One or more location types, separated by a pipe (|).")
-	enableAddressDescriptor = flag.String("enable_address_descriptor", "", "True or False.  Whether to return the Address Descriptors in the response.")
-)
-
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
 
-	var client *maps.Client
-	var err error
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("geocoding", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID := flags.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature := flags.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
+	address := flags.String("address", "", "The street address to geocode.")
+	components := flags.String("components", "", "Component filters as name:value pairs separated by |, with non-empty names and values.")
+	bounds := flags.String("bounds", "", "Bounding box as southwest_lat,southwest_lng|northeast_lat,northeast_lng.")
+	language := flags.String("language", "", "The language in which to return results.")
+	region := flags.String("region", "", "The region code, specified as a ccTLD two-character value.")
+	latlng := flags.String("latlng", "", "Latitude,longitude. Uses ReverseGeocode only without address or components; mixed inputs retain Geocode.")
+	resultType := flags.String("result_type", "", "Address types separated by |.")
+	locationType := flags.String("location_type", "", "Location types separated by |.")
+	enableAddressDescriptor := flags.String("enable_address_descriptor", "", "True or False. Whether to return Address Descriptors.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+	options := make([]maps.ClientOption, 0, len(clientOptions)+1)
 	if *apiKey != "" {
-		client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
+		options = append(options, maps.WithAPIKey(*apiKey))
 	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
+		options = append(options, maps.WithClientIDAndSignature(*clientID, *signature))
 	} else {
-		usageAndExit("Please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret.")
+		return 2, fmt.Errorf("please specify an API key (recommended), or an eligible existing customer's legacy client ID and URL signing secret")
 	}
-	check(err)
-
-	r := &maps.GeocodingRequest{
-		Address:  *address,
-		Language: *language,
-		Region:   *region,
+	client, err := maps.NewClient(append(options, clientOptions...)...)
+	if err != nil {
+		return 2, err
 	}
-
-	check(parseComponents(*components, r))
-	check(parseBounds(*bounds, r))
-	check(parseLatLng(*latlng, r))
+	r := &maps.GeocodingRequest{Address: *address, Language: *language, Region: *region}
+	for _, input := range []struct {
+		value string
+		parse func(string, *maps.GeocodingRequest) error
+	}{
+		{*components, parseComponents},
+		{*bounds, parseBounds},
+		{*latlng, parseLatLng},
+	} {
+		if err := input.parse(input.value, r); err != nil {
+			return 2, err
+		}
+	}
 	parseResultType(*resultType, r)
 	parseLocationType(*locationType, r)
 	parseEnableAddressDescriptor(*enableAddressDescriptor, r)
-
+	if r.Address == "" && len(r.Components) == 0 && r.LatLng == nil {
+		return 2, fmt.Errorf("address, components or latlng is required")
+	}
 	var resp maps.GeocodingResponse
 	if r.LatLng != nil && r.Address == "" && len(r.Components) == 0 {
-		resp, err = client.ReverseGeocode(context.Background(), r)
+		resp, err = client.ReverseGeocode(ctx, r)
 	} else {
-		resp, err = client.Geocode(context.Background(), r)
+		resp, err = client.Geocode(ctx, r)
 	}
-	check(err)
-
-	pretty.Println(resp)
+	if err != nil {
+		return 1, err
+	}
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
 func parseComponents(components string, r *maps.GeocodingRequest) error {

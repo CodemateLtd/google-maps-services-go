@@ -22,7 +22,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/url"
 	"os"
@@ -32,32 +31,6 @@ import (
 	"github.com/kr/pretty"
 	"googlemaps.github.io/maps"
 )
-
-var (
-	apiKey    = flag.String("key", "", "API key for Google Maps API access (recommended); may be combined with -signature for URL signing.")
-	clientID  = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
-	signature = flag.String("signature", "", "URL signing secret, not a precomputed signature; signs an API key or an eligible existing customer's legacy client ID.")
-	center    = flag.String("center", "", "Center the center of the map, equidistant from all edges of the map.")
-	zoom      = flag.Int("zoom", -1, "Zoom the zoom level of the map, which determines the magnification level of the map.")
-	size      = flag.String("size", "", "Size defines the rectangular dimensions of the map image.")
-	scale     = flag.Int("scale", -1, "Scale affects the number of pixels that are returned.")
-	format    = flag.String("format", "", "Format defines the format of the resulting image.")
-	maptype   = flag.String("maptype", "", "Maptype defines the type of map to construct.")
-	mapid     = flag.String("mapid", "", "MapId defines the mapid to use.")
-	language  = flag.String("language", "", "Language defines the language to use for display of labels on map tiles.")
-	region    = flag.String("region", "", "Region the appropriate borders to display, based on geo-political sensitivities.")
-	markers   markerFlags
-	paths     pathFlags
-	visible   visibleFlags
-	styles    styleFlags
-)
-
-func init() {
-	flag.Var(&markers, "marker", `Repeatable JSON marker: {"color":"blue","label":"A","size":"mid","locations":[[lat,lng]],"icon":{"url":"https://example.com/pin.png","anchor":"bottom","scale":2}}. Omit icon for ordinary markers; omit color/label/size with icon.`)
-	flag.Var(&paths, "path", `Repeatable JSON path: {"color":"0xff0000ff","fill_color":"0x0000ff40","weight":3,"geodesic":true,"locations":[[lat,lng],[lat,lng]]}. Requires at least two points; use explicit -center/-zoom for paths without markers.`)
-	flag.Var(&visible, "visible", "Repeatable latitude,longitude point to keep visible. Use explicit -center/-zoom without markers.")
-	flag.Var(&styles, "style", "Repeatable Static Maps style string, e.g. feature:water|element:geometry|color:0x0000ff.")
-}
 
 // point keeps the CLI's coordinate pairs distinct from the SDK's LatLng objects.
 type point maps.LatLng
@@ -229,36 +202,63 @@ func (s *styleFlags) Set(value string) error {
 	return nil
 }
 
-func usageAndExit(msg string) {
-	fmt.Fprintln(os.Stderr, msg)
-	fmt.Println("Flags:")
-	flag.PrintDefaults()
-	os.Exit(2)
-}
-
-func check(err error) {
-	if err != nil {
-		log.Fatalf("fatal error: %s", err)
-	}
-}
-
 func main() {
-	flag.Parse()
+	code, err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	os.Exit(code)
+}
 
-	var client *maps.Client
-	var err error
+func run(ctx context.Context, args []string, stdout, stderr io.Writer, clientOptions ...maps.ClientOption) (int, error) {
+	flags := flag.NewFlagSet("staticmap", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	apiKey := flags.String("key", "", "API key for Google Maps API access (recommended); may be combined with -signature for URL signing.")
+	clientID := flags.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature := flags.String("signature", "", "URL signing secret, not a precomputed signature; signs an API key or an eligible existing customer's legacy client ID.")
+	center := flags.String("center", "", "Center the center of the map, equidistant from all edges of the map.")
+	zoom := flags.Int("zoom", -1, "Zoom the zoom level of the map, which determines the magnification level of the map.")
+	size := flags.String("size", "", "Size defines the rectangular dimensions of the map image.")
+	scale := flags.Int("scale", -1, "Scale affects the number of pixels that are returned.")
+	format := flags.String("format", "", "Format defines the format of the resulting image.")
+	maptype := flags.String("maptype", "", "Maptype defines the type of map to construct.")
+	mapid := flags.String("mapid", "", "MapId defines the mapid to use.")
+	language := flags.String("language", "", "Language defines the language to use for display of labels on map tiles.")
+	region := flags.String("region", "", "Region the appropriate borders to display, based on geo-political sensitivities.")
+	var markers markerFlags
+	var paths pathFlags
+	var visible visibleFlags
+	var styles styleFlags
+	flags.Var(&markers, "marker", `Repeatable JSON marker: {"color":"blue","label":"A","size":"mid","locations":[[lat,lng]],"icon":{"url":"https://example.com/pin.png","anchor":"bottom","scale":2}}. Omit icon for ordinary markers; omit color/label/size with icon.`)
+	flags.Var(&paths, "path", `Repeatable JSON path: {"color":"0xff0000ff","fill_color":"0x0000ff40","weight":3,"geodesic":true,"locations":[[lat,lng],[lat,lng]]}. Requires at least two points.`)
+	flags.Var(&visible, "visible", "Repeatable latitude,longitude point to keep visible.")
+	flags.Var(&styles, "style", "Repeatable Static Maps style string, e.g. feature:water|element:geometry|color:0x0000ff.")
+	if err := flags.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0, nil
+		}
+		return 2, nil
+	}
+	if flags.NArg() != 0 {
+		return 2, fmt.Errorf("unexpected arguments: %v", flags.Args())
+	}
+
+	var credential maps.ClientOption
 	if *apiKey != "" {
 		if *signature != "" {
-			client, err = maps.NewClient(maps.WithAPIKeyAndSignature(*apiKey, *signature))
+			credential = maps.WithAPIKeyAndSignature(*apiKey, *signature)
 		} else {
-			client, err = maps.NewClient(maps.WithAPIKey(*apiKey))
+			credential = maps.WithAPIKey(*apiKey)
 		}
 	} else if *clientID != "" || *signature != "" {
-		client, err = maps.NewClient(maps.WithClientIDAndSignature(*clientID, *signature))
+		credential = maps.WithClientIDAndSignature(*clientID, *signature)
 	} else {
-		usageAndExit("Please specify an API key (recommended; optionally with a URL signing secret), or an eligible existing customer's legacy client ID and URL signing secret.")
+		return 2, fmt.Errorf("Please specify an API key (recommended; optionally with a URL signing secret), or an eligible existing customer's legacy client ID and URL signing secret.")
 	}
-	check(err)
+	client, err := maps.NewClient(append([]maps.ClientOption{credential}, clientOptions...)...)
+	if err != nil {
+		return 2, err
+	}
 
 	r := &maps.StaticMapRequest{
 		Center:    *center,
@@ -276,8 +276,13 @@ func main() {
 		MapStyles: styles,
 	}
 
-	resp, err := client.StaticMap(context.Background(), r)
-	check(err)
+	resp, err := client.StaticMap(ctx, r)
+	if err != nil {
+		return 1, err
+	}
 
-	pretty.Println(resp)
+	if _, err := pretty.Fprintf(stdout, "%# v\n", resp); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
