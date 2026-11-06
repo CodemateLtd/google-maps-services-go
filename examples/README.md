@@ -22,9 +22,9 @@ go mod download
 - Running an example can incur service charges. Run only the example you need,
   not this entire list. The Place Photo example can also create a local file.
 
-The key is the default credential for every command. All seven Places commands
-and both Roads commands require an API key. The former `-client_id` and
-`-signature` flags have been removed from the six Places commands that offered
+The key is the default credential for every command. Geolocation, all seven
+Places commands and the Roads commands require an API key. The former
+`-client_id` and `-signature` flags have been removed from the six Places commands that offered
 that unsupported authentication path; Find Place was already key-only.
 Directions, Distance Matrix, Elevation, Geocoding, Time Zone and Static Maps retain
 client-ID authentication only for [eligible existing Premium Plan customers](https://developers.google.com/maps/premium/overview).
@@ -49,6 +49,7 @@ migration guide. Newer APIs will not be added to this SDK.
 | Distance Matrix | `./examples/distancematrix/cmdline` | Distance Matrix API (Legacy) |
 | Elevation | `./examples/elevation/cmdline` | Elevation API |
 | Geocoding | `./examples/geocoding/cmdline` | Geocoding API |
+| Geolocation | `./examples/geolocation/cmdline` | Geolocation API |
 | Find Place from Text | `./examples/places/findplacefromtext` | Places API (Legacy) |
 | Nearby Search | `./examples/places/nearbysearch` | Places API (Legacy) |
 | Place Photo | `./examples/places/photo` | Places API (Legacy) |
@@ -144,3 +145,22 @@ Do not combine API keys and client IDs: the examples prefer `-key`, not a merged
 credential set. Static Maps uses a supplied signing secret with that key;
 the other retained examples use it only with the legacy client ID. Without an API
 key, legacy authentication requires both a client ID and its signing secret.
+
+## Geolocation input
+
+Enable Geolocation API and billing in the key's project. Pass one JSON object
+through `-request`, using the SDK's `cellTowers` and `wifiAccessPoints` fields.
+An explicit `considerIp` boolean is required: `true` permits IP-based fallback;
+`false` disables it.
+
+```sh
+go run ./examples/geolocation/cmdline -key "$GOOGLE_MAPS_API_KEY" -request '{"considerIp":true}'
+
+# Fictional measurements demonstrate the shape, not a usable location.
+go run ./examples/geolocation/cmdline -key "$GOOGLE_MAPS_API_KEY" -request '{"considerIp":false,"radioType":"gsm","cellTowers":[{"cellId":42,"locationAreaCode":7,"mobileCountryCode":999,"mobileNetworkCode":99,"signalStrength":-65}],"wifiAccessPoints":[{"macAddress":"02:00:00:00:00:01","signalStrength":-45,"channel":6},{"macAddress":"02:00:00:00:00:02","signalStrength":-60,"channel":11}]}'
+```
+
+Cell identifiers, Wi-Fi MAC addresses and IP addresses are privacy-sensitive:
+send only data you are authorized to share. Measurements and flags may be
+visible in shell history or process listings. Output contains estimated
+`latitude`, `longitude` and `accuracy_m` in meters, not an exact device location.
