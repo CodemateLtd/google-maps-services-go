@@ -144,3 +144,38 @@ Do not combine API keys and client IDs: the examples prefer `-key`, not a merged
 credential set. Static Maps uses a supplied signing secret with that key;
 the other retained examples use it only with the legacy client ID. Without an API
 key, legacy authentication requires both a client ID and its signing secret.
+
+## Static Maps overlays and styles
+
+Repeat `-marker`, `-path`, `-visible` and `-style` to add separate groups.
+Marker/path JSON uses numeric `[latitude,longitude]` pairs. Coordinates must be
+finite and within latitude -90–90 and longitude -180–180. Paths need at least
+two points.
+
+```sh
+# Ordinary marker groups can supply the viewport without center/zoom.
+go run ./examples/staticmap/cmdline -key "$GOOGLE_MAPS_API_KEY" -size 640x400 \
+  -marker '{"color":"blue","label":"A","locations":[[37.4,-122.1]]}' \
+  -marker '{"color":"red","label":"B","locations":[[37.5,-122.2]]}'
+
+# Custom icon: absolute public HTTP(S) image URL, anchor and scale.
+go run ./examples/staticmap/cmdline -key "$GOOGLE_MAPS_API_KEY" -size 640x400 \
+  -marker '{"locations":[[37.4,-122.1]],"icon":{"url":"https://maps.google.com/mapfiles/kml/pushpin/blue-pushpin.png","anchor":"bottom","scale":2}}'
+
+go run ./examples/staticmap/cmdline -key "$GOOGLE_MAPS_API_KEY" -size 640x400 -center '37.45,-122.15' -zoom 10 \
+  -path '{"color":"0xff0000ff","weight":3,"geodesic":true,"locations":[[37.4,-122.1],[37.5,-122.2]]}'
+
+go run ./examples/staticmap/cmdline -key "$GOOGLE_MAPS_API_KEY" -size 640x400 -center '37.45,-122.15' -zoom 10 \
+  -visible '37.4,-122.1' -visible '37.5,-122.2'
+
+go run ./examples/staticmap/cmdline -key "$GOOGLE_MAPS_API_KEY" -size 640x400 -center '37.45,-122.15' -zoom 10 \
+  -style 'feature:water|element:geometry|color:0x0000ff' -style 'feature:road|visibility:off'
+```
+
+Custom icons accept named anchors or nonnegative pixel coordinates such as
+`"12,24"`, and scales 1, 2 or 4. Do not combine icon settings with ordinary
+marker color, label or size. Style strings use the
+[Maps Static styling syntax](https://developers.google.com/maps/documentation/maps-static/styling).
+Use explicit center/zoom for path- or visible-only examples on the current SDK;
+this command does not change the SDK's viewport validation. Output remains a
+decoded Go image value, not a saved image file.
