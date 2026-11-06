@@ -23,7 +23,7 @@ go mod download
   not this entire list. The Place Photo example can also create a local file.
 
 The key is the default credential for every command. All seven Places commands
-and both Roads commands require an API key. The former `-client_id` and
+and all Roads commands require an API key. The former `-client_id` and
 `-signature` flags have been removed from the six Places commands that offered
 that unsupported authentication path; Find Place was already key-only.
 Directions, Distance Matrix, Elevation, Geocoding, Time Zone and Static Maps retain
@@ -56,6 +56,7 @@ migration guide. Newer APIs will not be added to this SDK.
 | Place Details | `./examples/places/placedetails` | Places API (Legacy) |
 | Query Autocomplete | `./examples/places/queryautocomplete` | Places API (Legacy) |
 | Text Search | `./examples/places/textsearch` | Places API (Legacy) |
+| Nearest Roads | `./examples/roads/nearestroads` | Roads API |
 | Snap to Roads | `./examples/roads/snaptoroad` | Roads API |
 | Speed Limits | `./examples/roads/speedlimits` | Roads API; eligible Asset Tracking access required |
 | Static Maps | `./examples/staticmap/cmdline` | Maps Static API |
@@ -144,3 +145,18 @@ Do not combine API keys and client IDs: the examples prefer `-key`, not a merged
 credential set. Static Maps uses a supplied signing secret with that key;
 the other retained examples use it only with the legacy client ID. Without an API
 key, legacy authentication requires both a client ID and its signing secret.
+
+## Nearest Roads
+
+Enable Roads API in a billing-enabled project. Supply pipe-separated independent
+coordinate pairs; unlike Snap to Roads, this command does not interpolate a path.
+
+```sh
+go run ./examples/roads/nearestroads -key "$GOOGLE_MAPS_API_KEY" -points '-35.27801,149.12958|40.714,-74.006'
+```
+
+Output includes snapped coordinates, road place IDs and zero-based original input
+indices. Multiple results can map to one input, response order need not match
+input order, and missing indices are printed as `absent`. The command propagates
+SDK-reported errors; HTTP error-envelope handling is a separate SDK concern
+tracked in [upstream issue #246](https://github.com/googlemaps/google-maps-services-go/issues/246).
