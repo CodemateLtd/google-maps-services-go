@@ -36,8 +36,8 @@ var (
 	language  = flag.String("language", "", "The language in which to return results.")
 	location  = flag.String("location", "", "The latitude/longitude around which to retrieve place information. This must be specified as latitude,longitude.")
 	radius    = flag.Uint("radius", 0, "Defines the distance (in meters) within which to bias place results. The maximum allowed radius is 50,000 meters.")
-	minprice  = flag.String("min_price", "", "Restricts results to only those places within the specified price level.")
-	maxprice  = flag.String("max_price", "", "Restricts results to only those places within the specified price level.")
+	minprice  = flag.String("min_price", "", "Minimum price level (0-4).")
+	maxprice  = flag.String("max_price", "", "Maximum price level (0-4), independent of -min_price.")
 	opennow   = flag.Bool("open_now", false, "Restricts results to only those places that are open for business at the time the query is sent.")
 	placeType = flag.String("type", "", "Restricts the results to places matching the specified type.")
 )
@@ -115,7 +115,7 @@ func parsePriceLevels(minprice string, maxprice string, r *maps.TextSearchReques
 	}
 
 	if maxprice != "" {
-		r.MaxPrice = parsePriceLevel(minprice)
+		r.MaxPrice = parsePriceLevel(maxprice)
 	}
 }
 

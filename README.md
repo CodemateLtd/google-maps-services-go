@@ -136,6 +136,21 @@ func main() {
 }
 ```
 
+## Error handling
+
+JSON API methods and `PlacePhoto` return a `*maps.HTTPError` for non-2xx HTTP responses, including responses with empty, malformed or non-JSON error bodies. `StatusCode` always contains the HTTP response status. When supplied by the service, `Code`, `Status` and `Message` retain its error metadata; `Details` and `Errors` preserve structured details and per-field errors as raw JSON, including Geolocation reason records.
+
+After an API call, inspect HTTP failures with `errors.As` (import `"errors"`):
+
+```go
+var httpErr *maps.HTTPError
+if errors.As(err, &httpErr) {
+	log.Printf("HTTP status %d, API status %s: %s", httpErr.StatusCode, httpErr.Status, httpErr.Message)
+}
+```
+
+HTTP status and service status are distinct. Successful HTTP responses still use the endpoint's existing JSON decoding and service-status checks; an HTTP 200 response can therefore still return a service error. This change does not add retries.
+
 ## Features
 
 ### Rate limiting

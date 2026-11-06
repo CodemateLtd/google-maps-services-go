@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/kr/pretty"
@@ -30,17 +29,17 @@ import (
 )
 
 var (
-	apiKey       = flag.String("key", "", "API key for Google Maps API access (recommended).")
-	clientID     = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
-	signature    = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
-	address      = flag.String("address", "", "The street address that you want to geocode, in the format used by the national postal service of the country concerned.")
-	components   = flag.String("components", "", "A component filter for which you wish to obtain a geocode.")
-	bounds       = flag.String("bounds", "", "The bounding box of the viewport within which to bias geocode results more prominently.")
-	language     = flag.String("language", "", "The language in which to return results.")
-	region       = flag.String("region", "", "The region code, specified as a ccTLD two-character value.")
-	latlng       = flag.String("latlng", "", "The textual latitude/longitude value for which you wish to obtain the closest, human-readable address.")
-	resultType   = flag.String("result_type", "", "One or more address types, separated by a pipe (|).")
-	locationType = flag.String("location_type", "", "One or more location types, separated by a pipe (|).")
+	apiKey                  = flag.String("key", "", "API key for Google Maps API access (recommended).")
+	clientID                = flag.String("client_id", "", "Legacy Premium Plan client ID for eligible existing customers; use -key otherwise.")
+	signature               = flag.String("signature", "", "URL signing secret for the eligible existing customer's legacy client ID.")
+	address                 = flag.String("address", "", "The street address that you want to geocode, in the format used by the national postal service of the country concerned.")
+	components              = flag.String("components", "", "Component filters as name:value pairs separated by |, with non-empty names and values.")
+	bounds                  = flag.String("bounds", "", "The bounding box used to bias results, as southwest_lat,southwest_lng|northeast_lat,northeast_lng.")
+	language                = flag.String("language", "", "The language in which to return results.")
+	region                  = flag.String("region", "", "The region code, specified as a ccTLD two-character value.")
+	latlng                  = flag.String("latlng", "", "The textual latitude/longitude value for which you wish to obtain the closest, human-readable address. Uses ReverseGeocode only when neither address nor components is set; mixed inputs retain Geocode.")
+	resultType              = flag.String("result_type", "", "One or more address types, separated by a pipe (|).")
+	locationType            = flag.String("location_type", "", "One or more location types, separated by a pipe (|).")
 	enableAddressDescriptor = flag.String("enable_address_descriptor", "", "True or False.  Whether to return the Address Descriptors in the response.")
 )
 
@@ -77,22 +76,27 @@ func main() {
 		Region:   *region,
 	}
 
-	parseComponents(*components, r)
-	parseBounds(*bounds, r)
-	parseLatLng(*latlng, r)
+	check(parseComponents(*components, r))
+	check(parseBounds(*bounds, r))
+	check(parseLatLng(*latlng, r))
 	parseResultType(*resultType, r)
 	parseLocationType(*locationType, r)
 	parseEnableAddressDescriptor(*enableAddressDescriptor, r)
 
-	resp, err := client.Geocode(context.Background(), r)
+	var resp maps.GeocodingResponse
+	if r.LatLng != nil && r.Address == "" && len(r.Components) == 0 {
+		resp, err = client.ReverseGeocode(context.Background(), r)
+	} else {
+		resp, err = client.Geocode(context.Background(), r)
+	}
 	check(err)
 
 	pretty.Println(resp)
 }
 
-func parseComponents(components string, r *maps.GeocodingRequest) {
+func parseComponents(components string, r *maps.GeocodingRequest) error {
 	if components == "" {
-		return
+		return nil
 	}
 	if r.Components == nil {
 		r.Components = make(map[maps.Component]string)
@@ -101,6 +105,9 @@ func parseComponents(components string, r *maps.GeocodingRequest) {
 	c := strings.Split(components, "|")
 	for _, cf := range c {
 		i := strings.Split(cf, ":")
+		if len(i) != 2 || i[0] == "" || i[1] == "" {
+			return fmt.Errorf("parseComponents: expected name:value with non-empty name and value, got %q", cf)
+		}
 		switch i[0] {
 		case "route":
 			r.Components[maps.ComponentRoute] = i[1]
@@ -113,57 +120,51 @@ func parseComponents(components string, r *maps.GeocodingRequest) {
 		case "country":
 			r.Components[maps.ComponentCountry] = i[1]
 		default:
-			log.Fatalf("parseComponents: component name %#v unknown", i[0])
+			return fmt.Errorf("parseComponents: component name %q unknown", i[0])
 		}
 	}
+	return nil
 }
 
-func parseBounds(bounds string, r *maps.GeocodingRequest) {
-	if bounds != "" {
-		b := strings.Split(bounds, "|")
-		sw := strings.Split(b[0], ",")
-		ne := strings.Split(b[1], ",")
-
-		swLat, err := strconv.ParseFloat(sw[0], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse bounds: %#v", err)
-		}
-		swLng, err := strconv.ParseFloat(sw[1], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse bounds: %#v", err)
-		}
-		neLat, err := strconv.ParseFloat(ne[0], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse bounds: %#v", err)
-		}
-		neLng, err := strconv.ParseFloat(ne[1], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse bounds: %#v", err)
-		}
-
-		r.Bounds = &maps.LatLngBounds{
-			NorthEast: maps.LatLng{Lat: neLat, Lng: neLng},
-			SouthWest: maps.LatLng{Lat: swLat, Lng: swLng},
-		}
+func parseBounds(bounds string, r *maps.GeocodingRequest) error {
+	if bounds == "" {
+		return nil
 	}
+	b := strings.Split(bounds, "|")
+	if len(b) != 2 {
+		return fmt.Errorf("parseBounds: expected southwest_lat,southwest_lng|northeast_lat,northeast_lng, got %q", bounds)
+	}
+	if strings.Count(b[0], ",") != 1 || strings.Count(b[1], ",") != 1 {
+		return fmt.Errorf("parseBounds: each corner must contain exactly latitude,longitude, got %q", bounds)
+	}
+	sw, err := maps.ParseLatLng(b[0])
+	if err != nil {
+		return fmt.Errorf("parseBounds: southwest corner: %w", err)
+	}
+	ne, err := maps.ParseLatLng(b[1])
+	if err != nil {
+		return fmt.Errorf("parseBounds: northeast corner: %w", err)
+	}
+	r.Bounds = &maps.LatLngBounds{
+		NorthEast: ne,
+		SouthWest: sw,
+	}
+	return nil
 }
 
-func parseLatLng(latlng string, r *maps.GeocodingRequest) {
-	if latlng != "" {
-		l := strings.Split(latlng, ",")
-		lat, err := strconv.ParseFloat(l[0], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse latlng: %#v", err)
-		}
-		lng, err := strconv.ParseFloat(l[1], 64)
-		if err != nil {
-			log.Fatalf("Couldn't parse latlng: %#v", err)
-		}
-		r.LatLng = &maps.LatLng{
-			Lat: lat,
-			Lng: lng,
-		}
+func parseLatLng(latlng string, r *maps.GeocodingRequest) error {
+	if latlng == "" {
+		return nil
 	}
+	if strings.Count(latlng, ",") != 1 {
+		return fmt.Errorf("parseLatLng: expected exactly latitude,longitude, got %q", latlng)
+	}
+	location, err := maps.ParseLatLng(latlng)
+	if err != nil {
+		return fmt.Errorf("parseLatLng: %w", err)
+	}
+	r.LatLng = &location
+	return nil
 }
 
 func parseResultType(resultType string, r *maps.GeocodingRequest) {

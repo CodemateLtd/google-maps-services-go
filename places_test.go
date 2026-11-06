@@ -15,9 +15,16 @@
 package maps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"image"
+	"image/jpeg"
+	"io"
+	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -912,6 +919,311 @@ func TestPlacePhotoMissingWidthAndHeight(t *testing.T) {
 
 	if "maps: both MaxHeight & MaxWidth missing" != err.Error() {
 		t.Errorf("Wrong error returned \"%v\"", err)
+	}
+}
+
+type photoHTTPBody struct {
+	io.Reader
+	readCalls  int
+	closeCalls int
+}
+
+func (b *photoHTTPBody) Read(p []byte) (int, error) {
+	b.readCalls++
+	return b.Reader.Read(p)
+}
+
+func (b *photoHTTPBody) Close() error {
+	b.closeCalls++
+	return nil
+}
+
+type photoHTTPTransport func(*http.Request) (*http.Response, error)
+
+func (f photoHTTPTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func photoHTTPJPEG(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 3, 2)), nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestPlacePhotoHTTPFailures(t *testing.T) {
+	responses := []struct {
+		name        string
+		statusCode  int
+		contentType string
+		body        string
+		code        int
+		status      string
+		message     string
+		details     string
+		fieldErrors string
+	}{
+		{
+			name:        "invalid photo reference",
+			statusCode:  http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"Photo reference expired"}}`,
+			code:        400,
+			status:      "INVALID_ARGUMENT",
+			message:     "Photo reference expired",
+		},
+		{
+			name:        "forbidden service diagnostic",
+			statusCode:  http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Billing disabled"}}`,
+			code:        403,
+			status:      "PERMISSION_DENIED",
+			message:     "Billing disabled",
+		},
+		{
+			name:       "forbidden without diagnostics",
+			statusCode: http.StatusForbidden,
+		},
+		{
+			name:        "rate limited with structured details",
+			statusCode:  http.StatusTooManyRequests,
+			contentType: "application/json",
+			body:        `{"error":{"statusCode":200,"code":8,"status":"RESOURCE_EXHAUSTED","message":"Rate limit exceeded","details":[{"quota":"photos"}],"errors":[{"reason":"rateLimitExceeded"}]}}`,
+			code:        8,
+			status:      "RESOURCE_EXHAUSTED",
+			message:     "Rate limit exceeded",
+			details:     `[{"quota":"photos"}]`,
+			fieldErrors: `[{"reason":"rateLimitExceeded"}]`,
+		},
+		{
+			name:        "server failure with legacy diagnostic",
+			statusCode:  http.StatusInternalServerError,
+			contentType: "application/json",
+			body:        `{"status":"UNKNOWN_ERROR","error_message":"Photo service unavailable"}`,
+			status:      "UNKNOWN_ERROR",
+			message:     "Photo service unavailable",
+		},
+		{
+			name:        "non-JSON server failure",
+			statusCode:  http.StatusInternalServerError,
+			contentType: "text/html",
+			body:        "<html>upstream failure</html>",
+		},
+		{
+			name:        "malformed diagnostics",
+			statusCode:  http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":`,
+		},
+		{
+			name:        "invalid diagnostic field discards partial metadata",
+			statusCode:  http.StatusBadRequest,
+			contentType: "application/json",
+			body:        `{"error":{"message":"partial","code":"invalid"}}`,
+		},
+		{
+			name:        "malformed forbidden diagnostics",
+			statusCode:  http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":`,
+		},
+		{
+			name:        "image-looking error",
+			statusCode:  http.StatusBadRequest,
+			contentType: "image/jpeg",
+			body:        string(photoHTTPJPEG(t)),
+		},
+		{
+			name:       "empty server failure",
+			statusCode: http.StatusInternalServerError,
+		},
+		{
+			name:       "below success boundary",
+			statusCode: 199,
+		},
+		{
+			name:       "redirect without location",
+			statusCode: http.StatusMultipleChoices,
+		},
+		{
+			name:       "not modified",
+			statusCode: http.StatusNotModified,
+		},
+	}
+	for _, response := range responses {
+		t.Run(response.name, func(t *testing.T) {
+			body := &photoHTTPBody{Reader: strings.NewReader(response.body)}
+			c, err := NewClient(WithAPIKey(apiKey), WithHTTPClient(&http.Client{
+				Transport: photoHTTPTransport(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: response.statusCode,
+						Header:     http.Header{"Content-Type": []string{response.contentType}},
+						Body:       body,
+					}, nil
+				}),
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := c.PlacePhoto(context.Background(), &PlacePhotoRequest{
+				PhotoReference: "photo-reference",
+				MaxWidth:       100,
+			})
+			if body.closeCalls != 1 {
+				t.Errorf("rejected body closed %d times, want 1", body.closeCalls)
+			}
+			if resp.Data != nil || resp.ContentType != "" {
+				t.Errorf("HTTP failure returned a successful photo response: %+v", resp)
+			}
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("expected HTTPError, got %T: %v", err, err)
+			}
+			if httpErr.StatusCode != response.statusCode || httpErr.Code != response.code ||
+				httpErr.Status != response.status {
+				t.Errorf("lost HTTP/service metadata: %+v", httpErr)
+			}
+			if response.statusCode == http.StatusForbidden && response.message == "" {
+				if !strings.Contains(httpErr.Message, "permissions") || !strings.Contains(httpErr.Message, "quota") {
+					t.Errorf("missing forbidden-response guidance: %q", httpErr.Message)
+				}
+			} else if httpErr.Message != response.message {
+				t.Errorf("service message = %q, want %q", httpErr.Message, response.message)
+			}
+			if string(httpErr.Details) != response.details || string(httpErr.Errors) != response.fieldErrors {
+				t.Errorf("lost structured diagnostics: details=%s errors=%s", httpErr.Details, httpErr.Errors)
+			}
+		})
+	}
+}
+
+func TestPlacePhotoHTTPSuccessOwnership(t *testing.T) {
+	jpegData := photoHTTPJPEG(t)
+	for _, statusCode := range []int{http.StatusOK, 299} {
+		t.Run(strconv.Itoa(statusCode), func(t *testing.T) {
+			for _, consume := range []string{"Data", "Image"} {
+				t.Run(consume, func(t *testing.T) {
+					body := &photoHTTPBody{Reader: bytes.NewReader(jpegData)}
+					c, err := NewClient(WithAPIKey(apiKey), WithHTTPClient(&http.Client{
+						Transport: photoHTTPTransport(func(*http.Request) (*http.Response, error) {
+							return &http.Response{
+								StatusCode: statusCode,
+								Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+								Body:       body,
+							}, nil
+						}),
+					}))
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp, err := c.PlacePhoto(context.Background(), &PlacePhotoRequest{
+						PhotoReference: "photo-reference",
+						MaxWidth:       100,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						if body.closeCalls == 0 {
+							body.Close()
+						}
+					}()
+					if resp.ContentType != "image/jpeg" || resp.Data != body {
+						t.Fatalf("successful response did not preserve the image stream: %+v", resp)
+					}
+					if body.readCalls != 0 || body.closeCalls != 0 {
+						t.Fatalf("PlacePhoto consumed or closed the successful stream: reads=%d closes=%d", body.readCalls, body.closeCalls)
+					}
+					if consume == "Image" {
+						img, err := resp.Image()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if img.Bounds() != image.Rect(0, 0, 3, 2) {
+							t.Errorf("decoded image bounds = %v", img.Bounds())
+						}
+					} else {
+						var data bytes.Buffer
+						_, err := data.ReadFrom(resp.Data)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !bytes.Equal(data.Bytes(), jpegData) {
+							t.Error("successful image bytes changed")
+						}
+						if body.closeCalls != 0 {
+							t.Error("reading Data closed the caller-owned stream")
+						}
+						if err := resp.Data.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if body.closeCalls != 1 {
+						t.Errorf("consumed body closed %d times, want 1", body.closeCalls)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPlacePhotoHTTPRedirectToImage(t *testing.T) {
+	redirectBody := &photoHTTPBody{Reader: strings.NewReader("redirecting")}
+	imageBody := &photoHTTPBody{Reader: bytes.NewReader(photoHTTPJPEG(t))}
+	requests := 0
+	c, err := NewClient(WithAPIKey(apiKey), WithHTTPClient(&http.Client{
+		Transport: photoHTTPTransport(func(r *http.Request) (*http.Response, error) {
+			requests++
+			if r.URL.Path == "/maps/api/place/photo" {
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://photos.example.test/photo-image"}},
+					Body:       redirectBody,
+				}, nil
+			}
+			if r.URL.Host != "photos.example.test" || r.URL.Path != "/photo-image" {
+				t.Fatalf("unexpected redirect destination: %s", r.URL)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+				Body:       imageBody,
+			}, nil
+		}),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.PlacePhoto(context.Background(), &PlacePhotoRequest{
+		PhotoReference: "photo-reference",
+		MaxWidth:       100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if imageBody.closeCalls == 0 {
+			imageBody.Close()
+		}
+	}()
+	if requests != 2 || redirectBody.closeCalls != 1 {
+		t.Errorf("redirect lifecycle: requests=%d redirect closes=%d", requests, redirectBody.closeCalls)
+	}
+	if imageBody.readCalls != 0 || imageBody.closeCalls != 0 {
+		t.Fatalf("redirect consumed or closed the final image: reads=%d closes=%d", imageBody.readCalls, imageBody.closeCalls)
+	}
+	img, err := resp.Image()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ContentType != "image/jpeg" || img.Bounds() != image.Rect(0, 0, 3, 2) {
+		t.Errorf("redirect did not return a valid image: type=%q bounds=%v", resp.ContentType, img.Bounds())
+	}
+	if imageBody.closeCalls != 1 {
+		t.Errorf("Image closed redirected body %d times, want 1", imageBody.closeCalls)
 	}
 }
 

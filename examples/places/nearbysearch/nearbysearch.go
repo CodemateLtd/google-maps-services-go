@@ -36,8 +36,8 @@ var (
 	radius    = flag.Uint("radius", 0, "Defines the distance (in meters) within which to bias place results. The maximum allowed radius is 50,000 meters.")
 	keyword   = flag.String("keyword", "", "A term to be matched against all content that Google has indexed for this place, including but not limited to name, type, and address, as well as customer reviews and other third-party content.")
 	language  = flag.String("language", "", "The language in which to return results.")
-	minPrice  = flag.String("minprice", "", "Restricts results to only those places within the specified price level.")
-	maxPrice  = flag.String("maxprice", "", "Restricts results to only those places within the specified price level.")
+	minPrice  = flag.String("minprice", "", "Minimum price level (0-4).")
+	maxPrice  = flag.String("maxprice", "", "Maximum price level (0-4), independent of -minprice.")
 	name      = flag.String("name", "", "One or more terms to be matched against the names of places, separated with a space character.")
 	openNow   = flag.Bool("open_now", false, "Restricts results to only those places that are open for business at the time the query is sent.")
 	rankBy    = flag.String("rankby", "", "Specifies the order in which results are listed. Valid values are prominence or distance.")
@@ -121,7 +121,7 @@ func parsePriceLevels(minPrice string, maxPrice string, r *maps.NearbySearchRequ
 	}
 
 	if maxPrice != "" {
-		r.MaxPrice = parsePriceLevel(minPrice)
+		r.MaxPrice = parsePriceLevel(maxPrice)
 	}
 }
 

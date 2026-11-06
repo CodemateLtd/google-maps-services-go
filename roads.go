@@ -45,7 +45,8 @@ var speedLimitsAPI = &apiConfig{
 	acceptsSignature: false,
 }
 
-// SnapToRoad makes a Snap to Road API request
+// SnapToRoad makes a Snap to Road API request.
+// A non-2xx HTTP response returns an *HTTPError.
 func (c *Client) SnapToRoad(ctx context.Context, r *SnapToRoadRequest) (*SnapToRoadResponse, error) {
 
 	if len(r.Path) == 0 {
@@ -104,7 +105,8 @@ type SnappedPoint struct {
 	PlaceID string `json:"placeId"`
 }
 
-// NearestRoads makes a Nearest Roads API request
+// NearestRoads makes a Nearest Roads API request.
+// A non-2xx HTTP response returns an *HTTPError.
 func (c *Client) NearestRoads(ctx context.Context, r *NearestRoadsRequest) (*NearestRoadsResponse, error) {
 
 	if len(r.Points) == 0 {
@@ -143,7 +145,8 @@ type NearestRoadsResponse struct {
 	SnappedPoints []SnappedPoint `json:"snappedPoints"`
 }
 
-// SpeedLimits makes a Speed Limits API request
+// SpeedLimits makes a Speed Limits API request.
+// A non-2xx HTTP response returns an *HTTPError.
 func (c *Client) SpeedLimits(ctx context.Context, r *SpeedLimitsRequest) (*SpeedLimitsResponse, error) {
 
 	if len(r.Path) == 0 && len(r.PlaceID) == 0 {

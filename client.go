@@ -277,6 +277,34 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	return client.Do(req.WithContext(ctx))
 }
 
+// HTTPError reports a non-2xx response from a JSON or Place Photo API.
+type HTTPError struct {
+	// StatusCode is the HTTP response status, independent of the JSON payload.
+	StatusCode int `json:"-"`
+	// Code is the numeric error code supplied by the service, if present.
+	Code int `json:"code"`
+	// Message is the service's description of the error, if present.
+	Message string `json:"message"`
+	// Status is the service status, such as PERMISSION_DENIED, if present.
+	Status string `json:"status"`
+	// Details preserves service-specific structured error details.
+	Details json.RawMessage `json:"details"`
+	// Errors preserves per-field errors, including Geolocation reason records.
+	Errors json.RawMessage `json:"errors"`
+}
+
+// Error returns the HTTP status and the service message, when available.
+func (e *HTTPError) Error() string {
+	message := e.Message
+	if message == "" {
+		message = http.StatusText(e.StatusCode)
+	}
+	if message != "" {
+		return fmt.Sprintf("maps: HTTP %d - %s", e.StatusCode, message)
+	}
+	return fmt.Sprintf("maps: HTTP %d", e.StatusCode)
+}
+
 func (c *Client) getJSON(ctx context.Context, config *apiConfig, apiReq apiRequest, resp interface{}) error {
 	requestMetrics := c.metricReporter.NewRequest(config.path)
 	httpResp, err := c.get(ctx, config, apiReq)
@@ -286,7 +314,7 @@ func (c *Client) getJSON(ctx context.Context, config *apiConfig, apiReq apiReque
 	}
 	defer httpResp.Body.Close()
 
-	err = json.NewDecoder(httpResp.Body).Decode(resp)
+	err = decodeJSONResponse(httpResp, resp)
 	requestMetrics.EndRequest(ctx, err, httpResp, httpResp.Header.Get("x-goog-maps-metro-area"))
 	return err
 }
@@ -300,9 +328,36 @@ func (c *Client) postJSON(ctx context.Context, config *apiConfig, apiReq interfa
 	}
 	defer httpResp.Body.Close()
 
-	err = json.NewDecoder(httpResp.Body).Decode(resp)
+	err = decodeJSONResponse(httpResp, resp)
 	requestMetrics.EndRequest(ctx, err, httpResp, httpResp.Header.Get("x-goog-maps-metro-area"))
 	return err
+}
+
+func decodeJSONResponse(httpResp *http.Response, resp interface{}) error {
+	if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
+		return json.NewDecoder(httpResp.Body).Decode(resp)
+	}
+	return decodeHTTPError(httpResp.StatusCode, httpResp.Body)
+}
+
+func decodeHTTPError(statusCode int, body io.Reader) *HTTPError {
+	var response struct {
+		Error        HTTPError `json:"error"`
+		Status       string    `json:"status"`
+		ErrorMessage string    `json:"error_message"`
+	}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		response.Error = HTTPError{StatusCode: statusCode}
+		return &response.Error
+	}
+	response.Error.StatusCode = statusCode
+	if response.Error.Status == "" {
+		response.Error.Status = response.Status
+	}
+	if response.Error.Message == "" {
+		response.Error.Message = response.ErrorMessage
+	}
+	return &response.Error
 }
 
 func (c *Client) setExperienceId(ids ...string) {
