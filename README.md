@@ -136,6 +136,24 @@ func main() {
 }
 ```
 
+### Geolocation IP fallback
+
+`GeolocationRequest.ConsiderIP` is an optional `*bool`, replacing the previous
+`bool` field. Leave it nil to omit `considerIp` and preserve the API's default of
+true. A pointer to false disables IP fallback; a pointer to true explicitly
+enables it.
+
+Migrate existing boolean assignments by taking the address of a variable:
+
+```go
+considerIP := false
+request := &maps.GeolocationRequest{ConsiderIP: &considerIP}
+```
+
+This is a breaking source change. The zero-value request now permits IP fallback
+when WiFi/cell signals are missing or insufficient; previously it always sent
+`considerIp:false`. Set an explicit false pointer to retain that previous behavior.
+
 ## Features
 
 ### Rate limiting
