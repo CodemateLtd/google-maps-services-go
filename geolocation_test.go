@@ -19,12 +19,15 @@ package maps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestGeolocation(t *testing.T) {
@@ -122,7 +125,6 @@ func TestCellTowerAndWiFiRequest(t *testing.T) {
 			failResponse("failed to read body", w, r)
 			return
 		}
-		body := string(b)
 		expected := `{"homeMobileCountryCode":310,` +
 			`"homeMobileNetworkCode":410,` +
 			`"radioType":"gsm",` +
@@ -137,8 +139,17 @@ func TestCellTowerAndWiFiRequest(t *testing.T) {
 			`"wifiAccessPoints":[{"macAddress":"00:25:9c:cf:1c:ac",` +
 			`"signalStrength":-43,` +
 			`"channel":11}]}`
-		if body != expected {
+		var body, want map[string]interface{}
+		if err := json.Unmarshal(b, &body); err != nil {
 			failResponse("failed to parse body", w, r)
+			return
+		}
+		if err := json.Unmarshal([]byte(expected), &want); err != nil {
+			failResponse("invalid expected request", w, r)
+			return
+		}
+		if !reflect.DeepEqual(body, want) {
+			failResponse("unexpected request fields", w, r)
 			return
 		}
 
@@ -151,12 +162,13 @@ func TestCellTowerAndWiFiRequest(t *testing.T) {
 
 	defer server.s.Close()
 	c, _ := NewClient(WithAPIKey(apiKey), WithBaseURL(server.s.URL))
+	considerIP := true
 	r := &GeolocationRequest{
 		HomeMobileCountryCode: 310,
 		HomeMobileNetworkCode: 410,
 		RadioType:             RadioTypeGSM,
 		Carrier:               "Vodafone",
-		ConsiderIP:            true,
+		ConsiderIP:            &considerIP,
 		CellTowers: []CellTower{{
 			CellID:            42,
 			LocationAreaCode:  415,
@@ -190,5 +202,76 @@ func TestCellTowerAndWiFiRequest(t *testing.T) {
 
 	if !reflect.DeepEqual(*resp, correctResponse) {
 		t.Errorf("expected %+v, was %+v", correctResponse, resp)
+	}
+}
+
+type geolocationRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f geolocationRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestGeolocationConsiderIP(t *testing.T) {
+	considerIPFalse, considerIPTrue := false, true
+	tests := []struct {
+		name    string
+		request GeolocationRequest
+		body    string
+	}{
+		{"omitted without signals", GeolocationRequest{}, `{}`},
+		{"explicit false without signals", GeolocationRequest{ConsiderIP: &considerIPFalse}, `{"considerIp":false}`},
+		{"explicit true without signals", GeolocationRequest{ConsiderIP: &considerIPTrue}, `{"considerIp":true}`},
+		{"omitted with one cell", GeolocationRequest{CellTowers: []CellTower{{CellID: 42}}}, `{"cellTowers":[{"cellId":42}]}`},
+		{"omitted with one access point", GeolocationRequest{WiFiAccessPoints: []WiFiAccessPoint{{MACAddress: "00:25:9c:cf:1c:ac"}}}, `{"wifiAccessPoints":[{"macAddress":"00:25:9c:cf:1c:ac"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body []byte
+			calls := 0
+			client, err := NewClient(WithAPIKey(apiKey), WithHTTPClient(&http.Client{
+				Transport: geolocationRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.Method != "POST" || r.URL.Path != "/geolocation/v1/geolocate" {
+						return nil, fmt.Errorf("unexpected Geolocation request: %s %s", r.Method, r.URL.Path)
+					}
+					var err error
+					body, err = ioutil.ReadAll(r.Body)
+					if err != nil {
+						return nil, err
+					}
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": {"application/json"}},
+						Body:       ioutil.NopCloser(strings.NewReader(`{"location":{"lat":1.25,"lng":2.5},"accuracy":12}`)),
+						Request:    r,
+					}, nil
+				}),
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			result, err := client.Geolocate(ctx, &tt.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("Geolocation requests = %d, want 1", calls)
+			}
+			var got, want map[string]interface{}
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("invalid request JSON %q: %v", body, err)
+			}
+			if err := json.Unmarshal([]byte(tt.body), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("Geolocation JSON = %s, want %s", body, tt.body)
+			}
+			if result.Location != (LatLng{Lat: 1.25, Lng: 2.5}) || result.Accuracy != 12 {
+				t.Errorf("decoded Geolocation result = %#v", result)
+			}
+		})
 	}
 }

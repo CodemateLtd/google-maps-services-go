@@ -107,9 +107,10 @@ type GeolocationRequest struct {
 	RadioType RadioType `json:"radioType,omitempty"`
 	// Carrier is the carrier name
 	Carrier string `json:"carrier,omitempty"`
-	// ConsiderIP Specifies whether to fall back to IP geolocation if wifi and cell
-	// tower signals are not available.
-	ConsiderIP bool `json:"considerIp"`
+	// ConsiderIP controls IP geolocation fallback when WiFi and cell tower
+	// signals are missing or insufficient. Nil omits the field, preserving the
+	// API default of true. A pointer to false disables fallback.
+	ConsiderIP *bool `json:"considerIp,omitempty"`
 	// CellTowers is an array of CellTower objects.
 	CellTowers []CellTower `json:"cellTowers,omitempty"`
 	// WifiAccessPoints is an array of WifiAccessPoint objects.
