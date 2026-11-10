@@ -128,17 +128,16 @@ func main() {
 	}
 
 	if *iterations == 1 {
-		routes, waypoints, err := client.Directions(context.Background(), r)
+		result, err := client.Directions(context.Background(), r)
 		check(err)
 
-		pretty.Println(waypoints)
-		pretty.Println(routes)
+		pretty.Println(result)
 	} else {
 		done := make(chan iterationResult)
 		for i := 0; i < *iterations; i++ {
 			go func(i int) {
 				startTime := time.Now()
-				_, _, err := client.Directions(context.Background(), r)
+				_, err := client.Directions(context.Background(), r)
 				done <- iterationResult{
 					fmt.Sprintf("Iteration %2d: round trip %.2f seconds", i, float64(time.Now().Sub(startTime))/1000000000),
 					err,
