@@ -96,14 +96,32 @@ func main() {
 		Origin:      "Sydney",
 		Destination: "Perth",
 	}
-	route, _, err := c.Directions(context.Background(), r)
+	result, err := c.Directions(context.Background(), r)
 	if err != nil {
 		log.Fatalf("fatal error: %s", err)
 	}
 
-	pretty.Println(route)
+	pretty.Println(result)
 }
 ```
+
+### Directions return-value migration (breaking change)
+
+`Client.Directions` now returns `(maps.DirectionsResult, error)` instead of
+`([]maps.Route, []maps.GeocodedWaypoint, error)`. Update callers to use
+`result, err := client.Directions(ctx, request)`, then read `result.Routes` and
+`result.GeocodedWaypoints` instead of the former separate return values. There is
+no tuple compatibility wrapper; this signature change requires a breaking release.
+
+`result.AvailableTravelModes` preserves the API's raw mode strings, including
+future values. `ZERO_RESULTS` remains a successful response with empty routes;
+check the result for available modes and geocoded waypoints rather than discarding
+it. Optional step `Maneuver` strings and transit vehicle `LocalIcon` URLs are also
+exposed; maneuver strings are not restricted to a fixed enum. `LocalIcon` follows
+the existing vehicle `Icon` URL parsing convention, including malformed-URL errors.
+Nested transit URLs also retain their API string representation when serializing
+complete Directions results.
+
 
 Sample usage of the Geocoding API with an API key to get an [Address Descriptor](https://developers.google.com/maps/documentation/geocoding/address-descriptors/requests-address-descriptors):
 

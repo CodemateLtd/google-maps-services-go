@@ -153,10 +153,10 @@ func TestDirectionsTransit(t *testing.T) {
 		Mode:        TravelModeTransit,
 	}
 
-	resp, _, err := c.Directions(context.Background(), r)
+	resp, err := c.Directions(context.Background(), r)
 
-	if len(resp) != 1 {
-		t.Errorf("Expected length of response is 1, was %+v", len(resp))
+	if len(resp.Routes) != 1 {
+		t.Fatalf("Expected length of response is 1, was %+v", len(resp.Routes))
 	}
 	if err != nil {
 		t.Errorf("r.Get returned non nil error, was %+v", err)
@@ -197,7 +197,7 @@ func TestDirectionsTransit(t *testing.T) {
 		WaypointOrder: make([]int, 0),
 	}
 
-	if actualResponse := &resp[0]; !reflect.DeepEqual(actualResponse, correctResponse) {
+	if actualResponse := &resp.Routes[0]; !reflect.DeepEqual(actualResponse, correctResponse) {
 		t.Errorf("expected %+v, was %+v", correctResponse, actualResponse)
 	}
 }
@@ -284,10 +284,10 @@ func TestDirectionsSydneyToParramatta(t *testing.T) {
 		Destination: "Parramatta",
 	}
 
-	resp, _, err := c.Directions(context.Background(), r)
+	resp, err := c.Directions(context.Background(), r)
 
-	if len(resp) != 1 {
-		t.Errorf("Expected length of response is 1, was %+v", len(resp))
+	if len(resp.Routes) != 1 {
+		t.Fatalf("Expected length of response is 1, was %+v", len(resp.Routes))
 	}
 	if err != nil {
 		t.Errorf("r.Get returned non nil error, was %+v", err)
@@ -331,8 +331,8 @@ func TestDirectionsSydneyToParramatta(t *testing.T) {
 		Copyrights: "Map data ©2015 Google",
 	}
 
-	if !reflect.DeepEqual(&resp[0], correctResponse) {
-		t.Errorf("expected %+v, was %+v", correctResponse, &resp[0])
+	if !reflect.DeepEqual(&resp.Routes[0], correctResponse) {
+		t.Errorf("expected %+v, was %+v", correctResponse, &resp.Routes[0])
 	}
 }
 
@@ -342,7 +342,7 @@ func TestDirectionsMissingOrigin(t *testing.T) {
 		Destination: "Parramatta",
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Missing Origin should return error")
 	}
 }
@@ -353,7 +353,7 @@ func TestDirectionsMissingDestination(t *testing.T) {
 		Origin: "Sydney",
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Missing Destination should return error")
 	}
 }
@@ -366,7 +366,7 @@ func TestDirectionsBadMode(t *testing.T) {
 		Mode:        "Not a Mode",
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Bad Mode should return error")
 	}
 }
@@ -380,7 +380,7 @@ func TestDirectionsDeclaringBothDepartureAndArrivalTime(t *testing.T) {
 		ArrivalTime:   "4pm",
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Declaring both DepartureTime and ArrivalTime should return error")
 	}
 }
@@ -395,7 +395,7 @@ func TestDirectionsTravelModeTransit(t *testing.T) {
 		TransitMode: transitModes,
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Declaring TransitMode without Mode=Transit should return error")
 	}
 }
@@ -408,7 +408,7 @@ func TestDirectionsTransitRoutingPreference(t *testing.T) {
 		TransitRoutingPreference: TransitRoutingPreferenceFewerTransfers,
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Declaring TransitRoutingPreference without Mode=TravelModeTransit should return error")
 	}
 }
@@ -422,7 +422,7 @@ func TestDirectionsWithCancelledContext(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := c.Directions(ctx, r); err == nil {
+	if _, err := c.Directions(ctx, r); err == nil {
 		t.Errorf("Cancelled context should return non-nil err")
 	}
 }
@@ -436,7 +436,7 @@ func TestDirectionsFailingServer(t *testing.T) {
 		Destination: "Parramatta",
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err == nil {
+	if _, err := c.Directions(context.Background(), r); err == nil {
 		t.Errorf("Failing server should return error")
 	}
 }
@@ -464,7 +464,7 @@ func TestDirectionsRequestURL(t *testing.T) {
 		TransitRoutingPreference: TransitRoutingPreferenceFewerTransfers,
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err != nil {
+	if _, err := c.Directions(context.Background(), r); err != nil {
 		t.Errorf("Unexpected error in constructing request URL: %+v", err)
 	}
 	if server.successful != 1 {
@@ -473,7 +473,15 @@ func TestDirectionsRequestURL(t *testing.T) {
 }
 
 func TestDirectionsZeroResults(t *testing.T) {
-	server := mockServer(200, `{"routes" : [], "status" : "ZERO_RESULTS"}`)
+	server := mockServer(200, `{
+		"routes": [],
+		"geocoded_waypoints": [
+			{"geocoder_status": "OK", "place_id": "origin-place", "types": ["locality"]},
+			{"geocoder_status": "ZERO_RESULTS"}
+		],
+		"available_travel_modes": ["DRIVING", "WALKING", "FUTURE_MODE"],
+		"status": "ZERO_RESULTS"
+	}`)
 	defer server.Close()
 	c, _ := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
 	r := &DirectionsRequest{
@@ -482,14 +490,110 @@ func TestDirectionsZeroResults(t *testing.T) {
 		Mode:        TravelModeBicycling,
 	}
 
-	routes, _, err := c.Directions(context.Background(), r)
+	result, err := c.Directions(context.Background(), r)
 
 	if err != nil {
-		t.Errorf("Unexpected error for ZERO_RESULTS status")
+		t.Fatalf("Unexpected error for ZERO_RESULTS status: %v", err)
 	}
+	if result.Routes == nil || len(result.Routes) != 0 {
+		t.Errorf("Expected non-nil empty routes, got %+v", result.Routes)
+	}
+	wantModes := []string{"DRIVING", "WALKING", "FUTURE_MODE"}
+	if !reflect.DeepEqual(result.AvailableTravelModes, wantModes) {
+		t.Errorf("Expected available modes %v, got %v", wantModes, result.AvailableTravelModes)
+	}
+	wantWaypoints := []GeocodedWaypoint{
+		{GeocoderStatus: "OK", PlaceID: "origin-place", Types: []string{"locality"}},
+		{GeocoderStatus: "ZERO_RESULTS"},
+	}
+	if !reflect.DeepEqual(result.GeocodedWaypoints, wantWaypoints) {
+		t.Errorf("Expected geocoded waypoints %+v, got %+v", wantWaypoints, result.GeocodedWaypoints)
+	}
+}
 
-	if len(routes) != 0 {
-		t.Errorf("Unexpected response for ZERO_RESULTS status")
+func TestDirectionsResponseFields(t *testing.T) {
+	server := mockServer(200, `{
+		"status": "OK",
+		"routes": [{
+			"legs": [{
+				"duration": {"value": 75, "text": "1 min"},
+				"steps": [{
+					"duration": {"value": 60, "text": "1 min"},
+					"maneuver": "turn-left",
+					"steps": [{
+						"duration": {"value": 15, "text": "15 seconds"},
+						"maneuver": "future-maneuver"
+					}],
+					"transit_details": {
+						"line": {
+							"vehicle": {
+								"name": "Bus",
+								"type": "BUS",
+								"local_icon": "https://example.com/local-bus.png"
+							}
+						}
+					}
+				}]
+			}]
+		}]
+	}`)
+	defer server.Close()
+	c, _ := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+	result, err := c.Directions(context.Background(), &DirectionsRequest{
+		Origin:      "origin",
+		Destination: "destination",
+		Mode:        TravelModeTransit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AvailableTravelModes != nil || result.GeocodedWaypoints != nil {
+		t.Errorf("Expected omitted metadata to be nil, got %+v", result)
+	}
+	if len(result.Routes) != 1 || len(result.Routes[0].Legs) != 1 {
+		t.Fatalf("Expected one route and leg, got %+v", result.Routes)
+	}
+	leg := result.Routes[0].Legs[0]
+	if leg.Duration != 75*time.Second || len(leg.Steps) != 1 {
+		t.Fatalf("Unexpected leg duration or steps: %+v", leg)
+	}
+	step := leg.Steps[0]
+	if step.Duration != time.Minute || step.Maneuver != "turn-left" {
+		t.Errorf("Unexpected step duration or maneuver: %+v", step)
+	}
+	if len(step.Steps) != 1 {
+		t.Fatalf("Expected one nested step, got %+v", step.Steps)
+	}
+	if nested := step.Steps[0]; nested.Duration != 15*time.Second || nested.Maneuver != "future-maneuver" {
+		t.Errorf("Unexpected nested step duration or maneuver: %+v", nested)
+	}
+	if step.TransitDetails == nil {
+		t.Fatal("Expected transit details")
+	}
+	vehicle := step.TransitDetails.Line.Vehicle
+	if vehicle.LocalIcon == nil || vehicle.LocalIcon.String() != "https://example.com/local-bus.png" {
+		t.Errorf("Unexpected local signage icon: %+v", vehicle.LocalIcon)
+	}
+}
+
+func TestDirectionsAPIStatusError(t *testing.T) {
+	server := mockServer(200, `{
+		"status": "REQUEST_DENIED",
+		"error_message": "request denied",
+		"routes": [],
+		"available_travel_modes": ["DRIVING"]
+	}`)
+	defer server.Close()
+	c, _ := NewClient(WithAPIKey(apiKey), WithBaseURL(server.URL))
+	result, err := c.Directions(context.Background(), &DirectionsRequest{
+		Origin:      "origin",
+		Destination: "destination",
+	})
+	if err == nil {
+		t.Fatal("Expected API status error")
+	}
+	if !reflect.DeepEqual(result, DirectionsResult{}) {
+		t.Errorf("Expected zero result on API status error, got %+v", result)
 	}
 }
 
@@ -508,7 +612,7 @@ func TestTrafficModel(t *testing.T) {
 		TrafficModel:  TrafficModelPessimistic,
 	}
 
-	if _, _, err := c.Directions(context.Background(), r); err != nil {
+	if _, err := c.Directions(context.Background(), r); err != nil {
 		t.Errorf("Unexpected error in constructing request URL: %+v", err)
 	}
 	if server.successful != 1 {
@@ -602,10 +706,10 @@ func TestFare(t *testing.T) {
 		Mode:        TravelModeTransit,
 	}
 
-	resp, _, err := c.Directions(context.Background(), r)
+	resp, err := c.Directions(context.Background(), r)
 
-	if len(resp) != 1 {
-		t.Errorf("Expected length of response is 1, was %+v", len(resp))
+	if len(resp.Routes) != 1 {
+		t.Fatalf("Expected length of response is 1, was %+v", len(resp.Routes))
 	}
 	if err != nil {
 		t.Errorf("r.Get returned non nil error, was %+v", err)
@@ -617,8 +721,8 @@ func TestFare(t *testing.T) {
 		Value:    1.25,
 	}
 
-	if !reflect.DeepEqual(resp[0].Fare, fare) {
-		t.Errorf("expected %+v, was %+v", fare, resp[0].Fare)
+	if !reflect.DeepEqual(resp.Routes[0].Fare, fare) {
+		t.Errorf("expected %+v, was %+v", fare, resp.Routes[0].Fare)
 	}
 }
 
@@ -703,17 +807,17 @@ func TestNoFare(t *testing.T) {
 		Mode:        TravelModeTransit,
 	}
 
-	resp, _, err := c.Directions(context.Background(), r)
+	resp, err := c.Directions(context.Background(), r)
 
-	if len(resp) != 1 {
-		t.Errorf("Expected length of response is 1, was %+v", len(resp))
+	if len(resp.Routes) != 1 {
+		t.Fatalf("Expected length of response is 1, was %+v", len(resp.Routes))
 	}
 	if err != nil {
 		t.Errorf("r.Get returned non nil error, was %+v", err)
 	}
 
-	if resp[0].Fare != nil {
-		t.Errorf("expected %+v, was %+v", nil, resp[0].Fare)
+	if resp.Routes[0].Fare != nil {
+		t.Errorf("expected %+v, was %+v", nil, resp.Routes[0].Fare)
 	}
 }
 

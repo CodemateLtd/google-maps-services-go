@@ -142,7 +142,7 @@ func (transitDetails *TransitDetails) MarshalJSON() ([]byte, error) {
 	x.EncArrivalTime = internal.NewDateTime(transitDetails.ArrivalTime)
 	x.EncDepartureTime = internal.NewDateTime(transitDetails.DepartureTime)
 
-	return json.Marshal(x)
+	return json.Marshal(&x)
 }
 
 // safeTransitLine is the raw version of TransitLine that does not have custom
@@ -185,10 +185,14 @@ func (transitLine *TransitLine) MarshalJSON() ([]byte, error) {
 	x := encodedTransitLine{}
 	x.safeTransitLine = safeTransitLine(*transitLine)
 
-	x.EncURL = transitLine.URL.String()
-	x.EncIcon = transitLine.Icon.String()
+	if transitLine.URL != nil {
+		x.EncURL = transitLine.URL.String()
+	}
+	if transitLine.Icon != nil {
+		x.EncIcon = transitLine.Icon.String()
+	}
 
-	return json.Marshal(x)
+	return json.Marshal(&x)
 }
 
 // safeTransitAgency is the raw version of TransitAgency that does not have
@@ -239,7 +243,8 @@ type safeTransitLineVehicle TransitLineVehicle
 // as per the Maps APIs
 type encodedTransitLineVehicle struct {
 	safeTransitLineVehicle
-	EncIcon string `json:"icon"`
+	EncIcon      string `json:"icon"`
+	EncLocalIcon string `json:"local_icon,omitempty"`
 }
 
 // UnmarshalJSON imlpements json.Unmarshaler for TransitLineVehicle. This
@@ -256,6 +261,12 @@ func (transitLineVehicle *TransitLineVehicle) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	if x.EncLocalIcon != "" {
+		transitLineVehicle.LocalIcon, err = url.Parse(x.EncLocalIcon)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -266,7 +277,12 @@ func (transitLineVehicle *TransitLineVehicle) MarshalJSON() ([]byte, error) {
 	x := encodedTransitLineVehicle{}
 	x.safeTransitLineVehicle = safeTransitLineVehicle(*transitLineVehicle)
 
-	x.EncIcon = transitLineVehicle.Icon.String()
+	if transitLineVehicle.Icon != nil {
+		x.EncIcon = transitLineVehicle.Icon.String()
+	}
+	if transitLineVehicle.LocalIcon != nil {
+		x.EncLocalIcon = transitLineVehicle.LocalIcon.String()
+	}
 
 	return json.Marshal(x)
 }

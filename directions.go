@@ -31,42 +31,53 @@ var directionsAPI = &apiConfig{
 	acceptsSignature: false,
 }
 
-// Directions issues the Directions request and retrieves the Response
-func (c *Client) Directions(ctx context.Context, r *DirectionsRequest) ([]Route, []GeocodedWaypoint, error) {
+// Directions issues a Directions request and returns routes and response metadata.
+// A ZERO_RESULTS response is not an error and may include available travel modes.
+func (c *Client) Directions(ctx context.Context, r *DirectionsRequest) (DirectionsResult, error) {
 	if r.Origin == "" {
-		return nil, nil, errors.New("maps: origin missing")
+		return DirectionsResult{}, errors.New("maps: origin missing")
 	}
 	if r.Destination == "" {
-		return nil, nil, errors.New("maps: destination missing")
+		return DirectionsResult{}, errors.New("maps: destination missing")
 	}
 	if r.Mode != "" && TravelModeDriving != r.Mode && TravelModeWalking != r.Mode && TravelModeBicycling != r.Mode && TravelModeTransit != r.Mode {
-		return nil, nil, fmt.Errorf("maps: unknown Mode: '%s'", r.Mode)
+		return DirectionsResult{}, fmt.Errorf("maps: unknown Mode: '%s'", r.Mode)
 	}
 	if r.DepartureTime != "" && r.ArrivalTime != "" {
-		return nil, nil, errors.New("maps: DepartureTime and ArrivalTime both specified")
+		return DirectionsResult{}, errors.New("maps: DepartureTime and ArrivalTime both specified")
 	}
 	if len(r.TransitMode) != 0 && r.Mode != TravelModeTransit {
-		return nil, nil, errors.New("maps: TransitMode specified while Mode != TravelModeTransit")
+		return DirectionsResult{}, errors.New("maps: TransitMode specified while Mode != TravelModeTransit")
 	}
 	if r.TransitRoutingPreference != "" && r.Mode != TravelModeTransit {
-		return nil, nil, errors.New("maps: mode of transit '" + string(r.Mode) + "' invalid for TransitRoutingPreference")
+		return DirectionsResult{}, errors.New("maps: mode of transit '" + string(r.Mode) + "' invalid for TransitRoutingPreference")
 	}
 
 	var response struct {
-		Routes            []Route            `json:"routes"`
-		GeocodedWaypoints []GeocodedWaypoint `json:"geocoded_waypoints"`
+		DirectionsResult
 		commonResponse
 	}
 
 	if err := c.getJSON(ctx, directionsAPI, r, &response); err != nil {
-		return nil, nil, err
+		return DirectionsResult{}, err
 	}
 
 	if err := response.StatusError(); err != nil {
-		return nil, nil, err
+		return DirectionsResult{}, err
 	}
 
-	return response.Routes, response.GeocodedWaypoints, nil
+	return response.DirectionsResult, nil
+}
+
+// DirectionsResult contains the routes and metadata returned by the Directions API.
+type DirectionsResult struct {
+	// Routes contains the calculated routes, which may be empty.
+	Routes []Route `json:"routes"`
+	// GeocodedWaypoints contains geocoding details for the origin, destination and waypoints.
+	GeocodedWaypoints []GeocodedWaypoint `json:"geocoded_waypoints"`
+	// AvailableTravelModes contains alternatives when the requested mode has no results.
+	// Values are preserved as returned by the API, including unknown future modes.
+	AvailableTravelModes []string `json:"available_travel_modes"`
 }
 
 func getWaypointsQueryString(r *DirectionsRequest) string {
@@ -300,6 +311,10 @@ type Step struct {
 	// HTML text string.
 	HTMLInstructions string `json:"html_instructions"`
 
+	// Maneuver describes the action for this step, when provided.
+	// Values are preserved as returned by the API, including unknown future maneuvers.
+	Maneuver string `json:"maneuver,omitempty"`
+
 	// Distance contains the distance covered by this step until the next step.
 	Distance `json:"distance"`
 
@@ -408,4 +423,7 @@ type TransitLineVehicle struct {
 	Type string `json:"type"`
 	// Icon contains the URL for an icon associated with this vehicle type
 	Icon *url.URL `json:"icon"`
+	// LocalIcon contains the URL for the vehicle icon used in local signage.
+	// It is nil when the optional local_icon field is omitted or empty.
+	LocalIcon *url.URL `json:"local_icon,omitempty"`
 }
