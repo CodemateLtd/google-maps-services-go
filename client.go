@@ -277,7 +277,7 @@ func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, err
 	return client.Do(req.WithContext(ctx))
 }
 
-// HTTPError reports a non-2xx response from a JSON API.
+// HTTPError reports a non-2xx response from a JSON or Place Photo API.
 type HTTPError struct {
 	// StatusCode is the HTTP response status, independent of the JSON payload.
 	StatusCode int `json:"-"`
@@ -337,17 +337,20 @@ func decodeJSONResponse(httpResp *http.Response, resp interface{}) error {
 	if httpResp.StatusCode >= http.StatusOK && httpResp.StatusCode < http.StatusMultipleChoices {
 		return json.NewDecoder(httpResp.Body).Decode(resp)
 	}
+	return decodeHTTPError(httpResp.StatusCode, httpResp.Body)
+}
 
+func decodeHTTPError(statusCode int, body io.Reader) *HTTPError {
 	var response struct {
 		Error        HTTPError `json:"error"`
 		Status       string    `json:"status"`
 		ErrorMessage string    `json:"error_message"`
 	}
-	if err := json.NewDecoder(httpResp.Body).Decode(&response); err != nil {
-		response.Error = HTTPError{StatusCode: httpResp.StatusCode}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		response.Error = HTTPError{StatusCode: statusCode}
 		return &response.Error
 	}
-	response.Error.StatusCode = httpResp.StatusCode
+	response.Error.StatusCode = statusCode
 	if response.Error.Status == "" {
 		response.Error.Status = response.Status
 	}

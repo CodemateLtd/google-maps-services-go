@@ -883,7 +883,10 @@ var placesPhotoAPI = &apiConfig{
 	acceptsClientID: true,
 }
 
-// PlacePhoto issues the Places API Photo request and retrieves the response
+// PlacePhoto issues the Places API Photo request and retrieves the response.
+// Final non-2xx HTTP responses return an *HTTPError and their bodies are closed.
+// On success, the caller must close the response Data or call Image to read and
+// close it.
 func (c *Client) PlacePhoto(ctx context.Context, r *PlacePhotoRequest) (PlacePhotoResponse, error) {
 
 	if r.PhotoReference == "" {
@@ -899,8 +902,13 @@ func (c *Client) PlacePhoto(ctx context.Context, r *PlacePhotoRequest) (PlacePho
 		return PlacePhotoResponse{}, err
 	}
 
-	if resp.statusCode == http.StatusForbidden {
-		return PlacePhotoResponse{}, errors.New("maps: request exceeds your available quota")
+	if resp.statusCode < http.StatusOK || resp.statusCode >= http.StatusMultipleChoices {
+		defer resp.data.Close()
+		httpErr := decodeHTTPError(resp.statusCode, resp.data)
+		if resp.statusCode == http.StatusForbidden && httpErr.Message == "" {
+			httpErr.Message = "request forbidden; check your API permissions and available quota"
+		}
+		return PlacePhotoResponse{}, httpErr
 	}
 
 	return PlacePhotoResponse{resp.contentType, resp.data}, nil
@@ -935,16 +943,16 @@ type PlacePhotoRequest struct {
 	MaxWidth uint
 }
 
-// PlacePhotoResponse is a response to the Place Photo request
+// PlacePhotoResponse contains a successful Place Photo response.
 type PlacePhotoResponse struct {
 	// ContentType is the server reported type of the Image.
 	ContentType string
-	// Data is the server returned image data. You must close this after you are
-	// finished.
+	// Data is the server returned image data. PlacePhoto leaves it unread and open.
+	// The caller must close it when finished, or call Image to read and close it.
 	Data io.ReadCloser
 }
 
-// Image will read and close  response.Data and return it as an image.
+// Image reads and closes resp.Data and returns it as an image.
 func (resp *PlacePhotoResponse) Image() (image.Image, error) {
 	defer resp.Data.Close()
 	if resp.ContentType != "image/jpeg" {
