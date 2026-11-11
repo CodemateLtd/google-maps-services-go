@@ -85,7 +85,7 @@ if errors.As(err, &apiErr) {
 }
 ```
 
-`OK` and `ZERO_RESULTS` remain non-errors. Unknown service status values and absent messages are preserved. HTTP/transport failures and Geolocation's error envelope are separate from this service-status contract; this change adds no automatic retries.
+`OK` and `ZERO_RESULTS` remain non-errors. Unknown service status values and absent messages are preserved. HTTP/transport failures and Geolocation's error envelope are separate from this service-status contract. Automatic retries are disabled by default.
 
 ## Usage
 
@@ -164,7 +164,7 @@ if errors.As(err, &httpErr) {
 }
 ```
 
-HTTP status and service status are distinct. Successful HTTP responses still use the endpoint's existing JSON decoding and service-status checks; an HTTP 200 response can therefore still return a service error. This change does not add retries.
+HTTP status and service status are distinct. Successful HTTP responses still use the endpoint's existing JSON decoding and service-status checks; an HTTP 200 response can therefore still return a service error.
 
 ## Features
 
@@ -173,6 +173,32 @@ HTTP status and service status are distinct. Successful HTTP responses still use
 Never sleep between requests again! By default, requests are sent at the expected rate limits for
 each web service, typically 50 queries per second for free users. If you want to speed up or slow
 down requests, you can do that too, using `maps.NewClient(maps.WithAPIKey(apiKey), maps.WithRateLimit(qps))`.
+
+### Optional bounded retries
+
+Retries are disabled by default. Opt in with an explicit policy (import `"time"`):
+
+```go
+c, err := maps.NewClient(
+	maps.WithAPIKey("Insert-API-Key-Here"),
+	maps.WithRetryPolicy(maps.RetryPolicy{
+		MaxAttempts:    3,
+		MaxElapsedTime: 5 * time.Second,
+		InitialDelay:   100 * time.Millisecond,
+		MaxDelay:       time.Second,
+	}),
+)
+```
+
+`MaxAttempts` includes the initial request. The policy is copied into the client; all four fields must be positive, and `MaxDelay` must be at least `InitialDelay`. Retries use capped exponential backoff with jitter, and every attempt participates in rate limiting.
+
+Only legacy API status `UNKNOWN_ERROR` and selected HTTP failures are candidates: HTTP 429, 500, 502, 503 and 504. Authentication, invalid-argument, daily-quota and other permanent service metadata override the HTTP status. Quota failures (HTTP 429, `RESOURCE_EXHAUSTED` or `OVER_QUERY_LIMIT`) require an explicit `rateLimitExceeded`, `userRateLimitExceeded`, `RATE_LIMIT_EXCEEDED` or `USER_RATE_LIMIT_EXCEEDED` reason in `errors` or `details`; ambiguous quota failures are not retried.
+
+For selected HTTP failures, empty status, `UNKNOWN_ERROR`, `INTERNAL`, `UNAVAILABLE` and `DEADLINE_EXCEEDED` are transient-neutral, as are `backendError`, `internalError`, `BACKEND_ERROR` and `INTERNAL_ERROR` reasons. Other nonempty service statuses or reasons veto retries. Numeric service codes are retained as metadata rather than compared with HTTP status numbers. Thus opaque selected 5xx responses may retry. Network errors (including timeouts reading an error body) and malformed successful JSON responses are not retried, and error-message text is not used for classification.
+
+`MaxElapsedTime` bounds the entire operation, including rate-limit waits, requests, response reads and backoff. An earlier caller context deadline or custom HTTP client's timeout wins; the retry policy does not extend or replace those limits. For successful binary responses, the budget also bounds body reads: close `PlacePhotoResponse.Data` when finished. A handed-off stream (including a subsequent read failure) is never retried, nor is a successful Static Map response retried after image-read failure. Read-only Geolocation POST requests replay the same JSON bytes.
+
+Caller-installed retrying transports or outer retry loops can multiply the SDK's attempts, API calls and charges. Avoid stacking retry policies unintentionally.
 
 ### Native types
 

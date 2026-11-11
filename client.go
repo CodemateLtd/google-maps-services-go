@@ -43,6 +43,7 @@ type Client struct {
 	channel           string
 	experienceId      []string
 	metricReporter    metrics.Reporter
+	retryPolicy       *RetryPolicy
 }
 
 // ClientOption is the type of constructor options for NewClient(...).
@@ -243,16 +244,26 @@ func (c *Client) post(ctx context.Context, config *apiConfig, apiReq interface{}
 		return nil, err
 	}
 
-	host := config.host
-	if c.baseURL != "" {
-		host = c.baseURL
-	}
-
 	body, err := json.Marshal(apiReq)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", host+config.path, bytes.NewBuffer(body))
+	return c.postRequest(ctx, config, body)
+}
+
+func (c *Client) postBytes(ctx context.Context, config *apiConfig, body []byte) (*http.Response, error) {
+	if err := c.awaitRateLimiter(ctx); err != nil {
+		return nil, err
+	}
+	return c.postRequest(ctx, config, body)
+}
+
+func (c *Client) postRequest(ctx context.Context, config *apiConfig, body []byte) (*http.Response, error) {
+	host := config.host
+	if c.baseURL != "" {
+		host = c.baseURL
+	}
+	req, err := http.NewRequest("POST", host+config.path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +281,11 @@ func (c *Client) post(ctx context.Context, config *apiConfig, apiReq interface{}
 }
 
 func (c *Client) do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if c.retryPolicy != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	client := c.httpClient
 	if client == nil {
 		client = http.DefaultClient
@@ -306,6 +322,9 @@ func (e *HTTPError) Error() string {
 }
 
 func (c *Client) getJSON(ctx context.Context, config *apiConfig, apiReq apiRequest, resp interface{}) error {
+	if c.retryPolicy != nil {
+		return c.retryJSON(ctx, config, apiReq, resp, false)
+	}
 	requestMetrics := c.metricReporter.NewRequest(config.path)
 	httpResp, err := c.get(ctx, config, apiReq)
 	if err != nil {
@@ -320,6 +339,9 @@ func (c *Client) getJSON(ctx context.Context, config *apiConfig, apiReq apiReque
 }
 
 func (c *Client) postJSON(ctx context.Context, config *apiConfig, apiReq interface{}, resp interface{}) error {
+	if c.retryPolicy != nil {
+		return c.retryJSON(ctx, config, apiReq, resp, true)
+	}
 	requestMetrics := c.metricReporter.NewRequest(config.path)
 	httpResp, err := c.post(ctx, config, apiReq)
 	if err != nil {
@@ -394,6 +416,9 @@ type binaryResponse struct {
 }
 
 func (c *Client) getBinary(ctx context.Context, config *apiConfig, apiReq apiRequest) (binaryResponse, error) {
+	if c.retryPolicy != nil {
+		return c.retryBinary(ctx, config, apiReq)
+	}
 	requestMetrics := c.metricReporter.NewRequest(config.path)
 	httpResp, err := c.get(ctx, config, apiReq)
 	if err != nil {
