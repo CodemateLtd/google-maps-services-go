@@ -144,6 +144,47 @@ Never sleep between requests again! By default, requests are sent at the expecte
 each web service, typically 50 queries per second for free users. If you want to speed up or slow
 down requests, you can do that too, using `maps.NewClient(maps.WithAPIKey(apiKey), maps.WithRateLimit(qps))`.
 
+### HTTP timeouts
+
+The SDK-created HTTP client now has a **30-second timeout**; previously it had
+no overall timeout. This includes connection setup, redirects and response-body
+reads, including `PlacePhotoResponse.Data` after `PlacePhoto` returns. Slow photo
+downloads may need a longer timeout.
+
+To change it, supply your own client using `WithHTTPClient` (import `net/http`
+and `time`):
+
+```go
+c, err := maps.NewClient(
+	maps.WithAPIKey(apiKey),
+	maps.WithHTTPClient(&http.Client{Timeout: 60 * time.Second}),
+)
+```
+
+To disable the overall HTTP timeout explicitly:
+
+```go
+c, err := maps.NewClient(
+	maps.WithAPIKey(apiKey),
+	maps.WithHTTPClient(&http.Client{Timeout: 0}),
+)
+```
+
+The SDK preserves the supplied client's timeout, including zero. Neither option
+disables caller-context cancellation/deadlines or phase-specific transport
+timeouts. The HTTP timeout does not include waiting for the SDK's rate limiter.
+For a deadline covering that wait and the request, pass a bounded context to the
+API method instead:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+result, err := c.Geocode(ctx, &maps.GeocodingRequest{Address: "Sydney"})
+```
+
+The earliest applicable deadline wins. Keep the context alive until any returned
+photo stream has been read, and close its `Data` when finished.
+
 ### Native types
 
 Native objects for each of the API responses.

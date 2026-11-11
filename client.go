@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"golang.org/x/time/rate"
 	"googlemaps.github.io/maps/internal"
@@ -62,12 +63,16 @@ const (
 
 // NewClient constructs a new Client which can make requests to the Google Maps
 // WebService APIs.
+//
+// The default HTTP client has a 30-second timeout, including response-body reads
+// and Place Photo streams. Use WithHTTPClient to change or disable this timeout.
+// Deadlines and cancellation on the context passed to each API method still apply.
 func NewClient(options ...ClientOption) (*Client, error) {
 	c := &Client{
 		requestsPerSecond: defaultRequestsPerSecond,
 		metricReporter:    metrics.NoOpReporter{},
 	}
-	WithHTTPClient(&http.Client{})(c)
+	WithHTTPClient(&http.Client{Timeout: 30 * time.Second})(c)
 	for _, option := range options {
 		err := option(c)
 		if err != nil {
@@ -87,6 +92,8 @@ func NewClient(options ...ClientOption) (*Client, error) {
 
 // WithHTTPClient configures a Maps API client with a http.Client to make requests
 // over.
+// The supplied client's Timeout is preserved: zero disables the overall HTTP
+// timeout, but does not disable caller-context deadlines or transport timeouts.
 func WithHTTPClient(c *http.Client) ClientOption {
 	return func(client *Client) error {
 		if _, ok := c.Transport.(*transport); !ok {
