@@ -43,18 +43,42 @@ As well as the following legacy APIs:
 
 ## Requirements
 
-- Go 1.7 or later.
+- Go 1.8 or later. Use current stable Go for new applications.
 - A Google Maps Platform [API key] from a project with the APIs below enabled.
 
 > [!IMPORTANT]  
 > This key should be kept secret on your server.
 
+Go 1.8 is the source-compatibility minimum: the pinned OpenCensus dependency
+uses `sort.Slice`, which is unavailable in Go 1.7. The existing `go 1.14`
+directive in `go.mod` is retained for module-based tooling; Go 1.8 does not
+read that file.
+
 ## Installation
 
-To install the Go Client for Google Maps Services, please execute the following `go get` command.
+With current stable Go, run this command in your application's Go module:
 
 ```bash
 go get googlemaps.github.io/maps
+```
+
+### Legacy Go (GOPATH/vendor)
+
+Prepare the declared dependency versions with current stable Go before
+selecting the legacy compiler. Keep the checkout at its canonical GOPATH
+location rather than fetching arbitrary newer dependencies with legacy `go get`:
+
+```bash
+# With current stable Go:
+export GOPATH="$HOME/go"
+git clone https://github.com/googlemaps/google-maps-services-go.git \
+  "$GOPATH/src/googlemaps.github.io/maps"
+cd "$GOPATH/src/googlemaps.github.io/maps"
+GO111MODULE=on go mod vendor
+
+# After selecting Go 1.8.7, keeping the same GOPATH:
+GO111MODULE=off go build -v . ./internal ./metrics ./examples/...
+GO111MODULE=off go test -v . ./internal ./metrics ./examples/...
 ```
 
 ## Documentation
