@@ -22,3 +22,16 @@ through a couple of legal hurdles, primarily a Contributor License Agreement
 Follow either of the two links above to access the appropriate CLA and
 instructions for how to sign and return it. Once we receive it, we'll be able
 to accept your pull requests.
+
+Testing
+-------
+
+CI checks Go 1.8.7 in GOPATH/vendor mode and current stable Go in module mode.
+The stable job retains race detection and coverage reporting. See the
+[legacy installation instructions](README.md#installation) to reproduce the
+minimum check. Old Go's recursive `./...` also visits vendor packages, so the
+minimum job explicitly selects this repository's packages.
+
+Keep dependency changes compatible with this minimum, or make an explicit
+support-policy decision. Public-branch Codecov uploads require tokenless uploads
+to be enabled in the organization's settings; fork PR uploads remain secretless.
