@@ -22,3 +22,16 @@ through a couple of legal hurdles, primarily a Contributor License Agreement
 Follow either of the two links above to access the appropriate CLA and
 instructions for how to sign and return it. Once we receive it, we'll be able
 to accept your pull requests.
+
+Automation
+----------
+
+CI uses GitHub-hosted `ubuntu-latest` runners. Releases provision Node 24
+(24.15 or later) and run the pinned semantic-release engine and plugins
+listed in `.github/workflows/release.yml`. These are release-tool requirements,
+not changes to the library's supported Go versions.
+
+Releases remain master-only, use `SYNCED_GITHUB_TOKEN_REPO`, and load
+`.releaserc` without npm publishing. Coverage uploads retain tokenless
+authentication; public-repository tokenless uploads must be enabled in
+the Codecov organization's settings.
