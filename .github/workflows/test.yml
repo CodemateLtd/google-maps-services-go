@@ -18,11 +18,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/setup-go@v3
+    - uses: actions/checkout@v7.0.1
+    - uses: actions/setup-go@v7.0.0
       with:
         go-version: 'stable'
       id: go
-    - uses: actions/checkout@v3
     - run: go build -v ./...
     - run: go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
-    - uses: codecov/codecov-action@v3
+    - uses: codecov/codecov-action@v7.1.1
+      with:
+        files: ./coverage.txt
